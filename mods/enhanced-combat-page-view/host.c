@@ -1,13 +1,14 @@
 // Mod "enhanced-combat-page-view": Cyaminthe's Enhanced Combat Page View (Steam Workshop 2802216129), as a host callback on an observation gate.
 // The PC mod scales BattleDiceCardUI.vibeRect (a child RectTransform) of the card under the cursor between 1.0 and 1.75, and moves it by sizeDelta * (scale - 1) / 2 so the page grows away from its anchor.
 // Here every page in the hand gets the same scale (DM_MOD_ECPV_ZOOM, a multiplier, 1.00 to 1.75, default 1.25: 25% bigger; a value of 10 or more is read as the old percentage, 125 = x1.25), selected or not, so there is no selection state to follow and nothing to undo:
-//   update_pre   BattleUnitCardsInHandUI.Update entry (once a frame, x0 = the hand): vibeRect of every page in _cardList gets the scale and the offset (a page that is vibrating is skipped)
-//   swap_press   BattleDiceCardUI.OnPdSubmit entry + 4 (x0 = the pressed page, x1 = the event data), Page Swapping (DM_MOD_ECPV_SWAP, Touchscreen Mode only): with a page selected, a left press on it deselects it the way the hand's right click does (SetToDefault, ReleaseSelectedCard, CloseUnitInformation, UnblockOtherUnitsDice); a left press on another page that GetClickableState would accept deselects the selected page and runs ShowDetail on the pressed one, so the game's own OnPdSubmit then selects it
+//   update_pre   BattleUnitCardsInHandUI.Update entry (once a frame, x0 = the hand): vibeRect of every page in _cardList gets the scale and the offset (a page that is vibrating is skipped); then the Hold to On-Play hold advances
+//   swap_press   BattleDiceCardUI.OnPdSubmit entry + 4 (x0 = the pressed page, x1 = the event data): starts the Hold to On-Play hold on a left press of a page that qualifies; then Page Swapping (DM_MOD_ECPV_SWAP, Touchscreen Mode only): with a page selected, a left press on it deselects it the way the hand's right click does (SetToDefault, ReleaseSelectedCard, CloseUnitInformation, UnblockOtherUnitsDice), except on a page the hold is running on, where the deselect waits for the release and happens only if the hold did not complete; a left press on another page that GetClickableState would accept deselects the selected page and runs ShowDetail on the pressed one, so the game's own OnPdSubmit then selects it
 //   apply_pre    BattleUnitCardsInHandUI.ApplySelectedCard entry (x0 = the hand), Suppress On-Play deselect (DM_MOD_ECPV_KEEP): remembers the speed die the hand was opened from when the selected page is an On-Play page (range Instance)
 //   apply_post   SpeedDiceUI.OnClickSpeedDice after its BattleUnitInformationUI.ReleaseSelectedCard call: clicks the remembered die again, which reopens the hand the way the player's own click on that die does, after ApplySelectedCard has closed it
 // Not ported: hands of more than 10 pages (the PC mod adds card UI objects), the 65 to 60 rotation constant, and the mouse wheel.
 // Off by default: DM_MOD_ECPV=1 turns the callback on (the launcher's Mods > Enhanced Combat Page View switch, or env.txt). The gate is always in the code and passes through while it is off.
 #include "dm.h"
+#include "dm_input.h"
 #include "hle_mods_gen.h"
 
 void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
@@ -29,6 +30,28 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define S_MI_BM 0x51D93E8u
 #define S_MI_STAGE 0x51C6C60u
 
+#define K_OBJECT_INSTANTIATE_PARENT 0x19B4E90u
+#define K_OBJECT_DESTROY 0x19B5310u
+#define K_COMPONENT_GET_TRANSFORM 0x19AE1D0u
+#define K_COMPONENT_GET_GAMEOBJECT 0x19AE220u
+#define K_IMAGE_SET_SPRITE 0x24D56D0u
+#define K_GRAPHIC_SET_COLOR 0x24DE110u
+#define K_GRAPHIC_SET_RAYCAST 0x24DE170u
+#define K_GRAPHIC_GET_MATERIAL 0x24DFAC0u
+#define K_GRAPHIC_SET_MATERIAL 0x24DFB80u
+#define K_RECT_SET_ANCHORMIN 0x19BA350u
+#define K_RECT_SET_ANCHORMAX 0x19BA4F0u
+#define K_RECT_SET_OFFSETMIN 0x19BADB0u
+#define K_RECT_SET_OFFSETMAX 0x19BB150u
+#define K_INPUT_GET_MOUSEBUTTON 0x3530660u
+#define K_INPUT_GET_MOUSEPOSITION 0x3530A20u
+#define K_TIME_UNSCALED_DT 0x19B91C0u
+#define K_HAND_APPLY 0x1FDEB00u
+#define K_CTRL_RESET_CURSOR 0x1E22770u
+#define S_CTRL_CLASS 0x51DE940u
+#define S_MI_NOTIFY 0x51E57D8u
+#define K_SCRIPT_BASE_VIRTUALS 0x1C54490u
+
 #define F_HAND_SELECTED 0x60
 #define F_HAND_BEFORE_DICE 0xA0
 #define F_CARD_MODEL 0x128
@@ -46,6 +69,28 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 
 #define F_CARD_VIBERECT 0x18                    // BattleDiceCardUI.vibeRect
 #define F_CARD_VIBING 0x1F1                     // BattleDiceCardUI.isRunningVibeCard
+#define F_HAND_UNIT 0x50
+#define F_CARD_ARTWORK 0x68
+#define F_CARD_DODGES 0x48
+#define F_MODEL_SCRIPT 0x70
+#define F_DICE_SLOT 0x160
+#define F_DICE_INFO 0x168
+#define F_CLASS_STATICS 0xB8
+#define F_NOTIFY_FLAG 0x58
+#define F_NOTIFY_CALLBACK 0x40
+#define F_CALLBACK_INVOKE 0x18
+#define F_CALLBACK_TARGET 0x40
+#define F_CALLBACK_METHOD 0x28
+#define F_ARRAY_LENGTH 0x18
+#define VT_BASE 0x138
+#define VT_ENTRY 16
+#define VT_ON_USE_INSTANCE 39
+#define VT_FIRST_TARGET_VIRTUAL 40
+#define VT_TARGET_VIRTUALS 4
+#define HOLD_SECONDS 0.75f
+#define HOLD_GRACE 0.2f
+#define HOLD_MOVE_PIXELS 48.0f
+#define HOLD_MAX_STEP 0.1f
 #define F_HAND_CARDLIST 0x18                    // BattleUnitCardsInHandUI._cardList (List<BattleDiceCardUI>)
 #define F_LIST_ITEMS 0x10
 #define F_LIST_SIZE 0x18
@@ -53,11 +98,21 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 
 typedef struct { float x, y; } v2;
 typedef struct { float x, y, z; } v3;
+typedef struct { float r, g, b, a; } rgba;
+
+static const uint32_t k_target_readers[] = {
+    0x1B856F0u, 0x1B85BA0u, 0x1B85180u, 0x1C635C0u, 0x1C63280u, 0x1C63420u, 0x1C630E0u, 0x1C62F40u, 0x1C621C0u, 0x1C62980u,
+    0x260C4C0u, 0x1C604F0u, 0x1C85220u, 0x1C85370u, 0x1C85910u, 0x1B59140u, 0x1B594B0u, 0x1B59800u, 0x1B59AF0u,
+};
 
 static uint8_t *s_main;
 static int g_logged;
 static void *s_hand;
 static void *s_keep_die;
+
+static void hold_begin(void *hand, void *card, int pad);
+static void hold_tick(void *hand);
+static int hold_deferred(void *card);
 
 static uint8_t *main_base(void) {
     if (!s_main)
@@ -106,6 +161,7 @@ static void update_run(uint64_t *r, int param) {
         if (!card || *(const uint8_t *)((uintptr_t)card + F_CARD_VIBING)) continue;
         set_zoom(card, zoom());
     }
+    hold_tick((void *)r[0]);
     if (g_logged++ < 3) LOG("[mod enhanced-combat-page-view] hand %#llx: %d page(s)", (unsigned long long)r[0], n);
 }
 
@@ -150,14 +206,18 @@ static void deselect(void *hand) {
 
 static void swap_run(uint64_t *r, int param) {
     (void)param;
-    if (!main_base() || !swap_on()) return;
+    if (!main_base()) return;
     void *hand = s_hand, *card = (void *)r[0], *ev = (void *)r[1];
     if (!hand || !card || !ev) return;
-    void *selected = field(hand, F_HAND_SELECTED);
-    if (!selected || !card_in_hand(hand, card)) return;
     if (FN(K_INPUT_TYPE, int, void *, const void *)(ev, NULL) == INPUT_PAD) return;
     if (*(const int *)((uintptr_t)ev + F_EVENT_BUTTON) != 0) return;
+    if (!card_in_hand(hand, card)) return;
+    hold_begin(hand, card, 0);
+    if (!swap_on()) return;
+    void *selected = field(hand, F_HAND_SELECTED);
+    if (!selected) return;
     if (card == selected) {
+        if (hold_deferred(card)) return;
         deselect(hand);
         LOG("[mod enhanced-combat-page-view] page %#llx deselected by a tap", (unsigned long long)(uintptr_t)card);
         return;
@@ -201,6 +261,173 @@ static void apply_post_run(uint64_t *r, int param) {
     if (!die || !main_base()) return;
     FN(K_DICE_CLICK, void, void *, const void *)(die, NULL);
     LOG("[mod enhanced-combat-page-view] on-play page played, speed die %#llx selected again", (unsigned long long)(uintptr_t)die);
+}
+
+static int hold_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DM_MOD_ECPV_HOLD");
+        on = v && v[0] && atoi(v) != 0;
+        LOG("[mod enhanced-combat-page-view] hold to on-play %s (DM_MOD_ECPV_HOLD=%s)", on ? "on" : "off", v ? v : "unset");
+    }
+    return on;
+}
+
+static int self_only(void *card) {
+    void *model = field(card, F_CARD_MODEL);
+    void *spec = field(field(model, F_MODEL_XML), F_XML_SPEC);
+    if (!spec || *(const int *)((uintptr_t)spec + F_SPEC_RANGE) != RANGE_INSTANCE) return 0;
+    void *script = field(model, F_MODEL_SCRIPT);
+    if (!script) return 0;
+    const uint8_t *klass = *(const uint8_t *const *)script;
+    if (!klass) return 0;
+    for (int i = 0; i < VT_TARGET_VIRTUALS; i++) {
+        const uint8_t *fn = *(const uint8_t *const *)(klass + VT_BASE + VT_ENTRY * (VT_FIRST_TARGET_VIRTUAL + i));
+        if (fn != s_main + K_SCRIPT_BASE_VIRTUALS + 0x10u * (uint32_t)i) return 0;
+    }
+    const uint8_t *on_use = *(const uint8_t *const *)(klass + VT_BASE + VT_ENTRY * VT_ON_USE_INSTANCE);
+    for (size_t i = 0; i < sizeof k_target_readers / sizeof k_target_readers[0]; i++)
+        if (on_use == s_main + k_target_readers[i]) return 0;
+    return 1;
+}
+
+static struct {
+    void *card;
+    void *img;
+    void *rect;
+    float t;
+    int pad;
+    int defer;
+    v2 pos;
+} s_hold;
+
+static void *transform_of(void *obj) { return FN(K_COMPONENT_GET_TRANSFORM, void *, void *, const void *)(obj, NULL); }
+
+static void overlay_make(void *card) {
+    void *art = field(card, F_CARD_ARTWORK);
+    void *vibe = field(card, F_CARD_VIBERECT);
+    if (!art || !vibe) return;
+    void *parent = transform_of(vibe);
+    if (!parent) return;
+    void *img = FN(K_OBJECT_INSTANTIATE_PARENT, void *, void *, void *, const void *)(art, parent, NULL);
+    if (!img) return;
+    void *dodges = field(card, F_CARD_DODGES);
+    void *dodge = dodges && *(const int *)((uintptr_t)dodges + F_ARRAY_LENGTH) > 0 ? *(void *const *)((uintptr_t)dodges + F_ARRAY_DATA) : NULL;
+    void *mat = dodge ? FN(K_GRAPHIC_GET_MATERIAL, void *, void *, const void *)(dodge, NULL) : NULL;
+    rgba c = {0.6f, 0.6f, 0.6f, mat ? 1.0f : 0.45f};
+    FN(K_IMAGE_SET_SPRITE, void, void *, void *, const void *)(img, NULL, NULL);
+    FN(K_GRAPHIC_SET_RAYCAST, void, void *, int, const void *)(img, 0, NULL);
+    FN(K_GRAPHIC_SET_COLOR, void, void *, rgba, const void *)(img, c, NULL);
+    if (mat) FN(K_GRAPHIC_SET_MATERIAL, void, void *, void *, const void *)(img, mat, NULL);
+    void *rect = transform_of(img);
+    if (!rect) return;
+    v2 zero = {0, 0};
+    v2 one = {1, 0};
+    FN(K_RECT_SET_ANCHORMIN, void, void *, v2, const void *)(rect, zero, NULL);
+    FN(K_RECT_SET_ANCHORMAX, void, void *, v2, const void *)(rect, one, NULL);
+    FN(K_RECT_SET_OFFSETMIN, void, void *, v2, const void *)(rect, zero, NULL);
+    FN(K_RECT_SET_OFFSETMAX, void, void *, v2, const void *)(rect, zero, NULL);
+    s_hold.img = img;
+    s_hold.rect = rect;
+}
+
+static void overlay_fill(float progress) {
+    if (!s_hold.rect) return;
+    v2 top = {1, progress > 1.0f ? 1.0f : progress};
+    FN(K_RECT_SET_ANCHORMAX, void, void *, v2, const void *)(s_hold.rect, top, NULL);
+}
+
+static void hold_end(void *hand) {
+    if (s_hold.img && hand && card_in_hand(hand, s_hold.card)) {
+        void *go = FN(K_COMPONENT_GET_GAMEOBJECT, void *, void *, const void *)(s_hold.img, NULL);
+        if (go) FN(K_OBJECT_DESTROY, void, void *, const void *)(go, NULL);
+    }
+    memset(&s_hold, 0, sizeof s_hold);
+}
+
+static v2 pointer_pos(void) {
+    v3 p = FN(K_INPUT_GET_MOUSEPOSITION, v3, const void *)(NULL);
+    v2 r = {p.x, p.y};
+    return r;
+}
+
+static void hold_begin(void *hand, void *card, int pad) {
+    if (!hold_on() || !self_only(card)) return;
+    if (s_hold.card) hold_end(hand);
+    s_hold.card = card;
+    s_hold.pad = pad;
+    if (!pad) {
+        s_hold.pos = pointer_pos();
+        s_hold.defer = swap_on() && field(hand, F_HAND_SELECTED) == card;
+    }
+    overlay_make(card);
+    LOG("[mod enhanced-combat-page-view] hold started on page %#llx (%s)", (unsigned long long)(uintptr_t)card, pad ? "pad" : "pointer");
+}
+
+static int hold_deferred(void *card) { return s_hold.card == card && s_hold.defer; }
+
+static void play_self(void *hand, void *card) {
+    void *unit = field(hand, F_HAND_UNIT);
+    void *die = field(hand, F_HAND_BEFORE_DICE);
+    if (!unit || !die || field(hand, F_HAND_SELECTED) != card) return;
+    int slot = *(const int *)((uintptr_t)die + F_DICE_SLOT);
+    s_keep_die = keep_on() ? die : NULL;
+    FN(K_HAND_APPLY, void, void *, void *, int, const void *)(hand, unit, slot, NULL);
+    void **cell = *(void ***)(s_main + S_CTRL_CLASS);
+    uint8_t *klass = cell ? *(uint8_t **)cell : NULL;
+    void **statics = klass ? *(void ***)(klass + F_CLASS_STATICS) : NULL;
+    void *ctrl = statics ? statics[0] : NULL;
+    if (ctrl) FN(K_CTRL_RESET_CURSOR, void, void *, int, int, const void *)(ctrl, 0, 1, NULL);
+    void *info = field(die, F_DICE_INFO);
+    if (info) FN(K_INFO_RELEASE, void, void *, const void *)(info, NULL);
+    void *notify = singleton(K_SINGLETON_BM, S_MI_NOTIFY);
+    if (notify && *(const uint8_t *)((uintptr_t)notify + F_NOTIFY_FLAG)) {
+        void *cb = field(notify, F_NOTIFY_CALLBACK);
+        if (cb) ((void (*)(void *, void *))*(void **)((uintptr_t)cb + F_CALLBACK_INVOKE))(field(cb, F_CALLBACK_TARGET), field(cb, F_CALLBACK_METHOD));
+    }
+    LOG("[mod enhanced-combat-page-view] on-play page %#llx played without a target (die %#llx, slot %d)", (unsigned long long)(uintptr_t)card, (unsigned long long)(uintptr_t)die, slot);
+    apply_post_run(NULL, 0);
+}
+
+static void hold_tick(void *hand) {
+    if (!hold_on() || !main_base()) return;
+    void *selected = field(hand, F_HAND_SELECTED);
+    int x_held = (dm_mod_keys() & DM_BTN_X) != 0;
+    if (!s_hold.card && x_held && selected && card_in_hand(hand, selected)) hold_begin(hand, selected, 1);
+    void *card = s_hold.card;
+    if (!card) return;
+    if (!card_in_hand(hand, card)) {
+        memset(&s_hold, 0, sizeof s_hold);
+        return;
+    }
+    int held = s_hold.pad ? x_held : (FN(K_INPUT_GET_MOUSEBUTTON, uint32_t, int, const void *)(0, NULL) & 1u) != 0;
+    if (!held) {
+        int tap = s_hold.defer;
+        hold_end(hand);
+        if (tap) {
+            deselect(hand);
+            LOG("[mod enhanced-combat-page-view] page %#llx deselected by a tap", (unsigned long long)(uintptr_t)card);
+        }
+        return;
+    }
+    if (!s_hold.pad) {
+        v2 p = pointer_pos();
+        float dx = p.x - s_hold.pos.x, dy = p.y - s_hold.pos.y;
+        if (dx * dx + dy * dy > HOLD_MOVE_PIXELS * HOLD_MOVE_PIXELS) {
+            hold_end(hand);
+            return;
+        }
+    }
+    if (selected != card && s_hold.t > HOLD_GRACE) {
+        hold_end(hand);
+        return;
+    }
+    float dt = FN(K_TIME_UNSCALED_DT, float, const void *)(NULL);
+    s_hold.t += dt > HOLD_MAX_STEP ? HOLD_MAX_STEP : dt;
+    overlay_fill(s_hold.t / HOLD_SECONDS);
+    if (s_hold.t < HOLD_SECONDS || selected != card) return;
+    hold_end(hand);
+    play_self(hand, card);
 }
 
 static int mod_enabled(void) {

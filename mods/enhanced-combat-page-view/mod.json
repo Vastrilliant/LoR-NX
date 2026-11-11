@@ -1,7 +1,7 @@
 {
   "id": "enhanced-combat-page-view",
   "title": "Enhanced Combat Page View",
-  "description": "Port of Cyaminthe's Enhanced Combat Page View (Workshop 2802216129) as a host callback on an observation gate: the combat pages in the hand are zoomed (x1.25, 25% bigger, by default), and in Touchscreen Mode a tap on another page swaps the selected page, and playing an On-Play page keeps the speed die selected. For Library of Ruina 1.0.3.",
+  "description": "Port of Cyaminthe's Enhanced Combat Page View (Workshop 2802216129) as a host callback on an observation gate: the combat pages in the hand are zoomed (x1.25, 25% bigger, by default), and in Touchscreen Mode a tap on another page swaps the selected page, playing an On-Play page keeps the speed die selected, and holding an On-Play page that only affects its user for 0.75 seconds (the left button on it, or X on the selected page) plays it without a target. For Library of Ruina 1.0.3.",
   "launcher": {
     "env": "DM_MOD_ECPV",
     "category": "Quality of Life",
@@ -36,6 +36,15 @@
       "off": "0",
       "label": "Suppress On-Play deselect",
       "note": "Using an 'On-Play' combat page no longer exits you out of the deck",
+      "default": "0"
+    },
+    {
+      "env": "DM_MOD_ECPV_HOLD",
+      "kind": "toggle",
+      "on": "1",
+      "off": "0",
+      "label": "Hold to On-Play",
+      "note": "Holding an 'On-Play' combat page automatically plays it without having to target an enemy",
       "default": "0"
     }
   ],
