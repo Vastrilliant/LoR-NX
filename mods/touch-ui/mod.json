@@ -102,6 +102,20 @@
         "offset": "0x2971720",
         "word": "d10183ff",
         "reason": "ScrollRect.OnDrag entry: x0 = the list, x1 = the PointerEventData; diagnostics log its drag state"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 10,
+        "offset": "0x24a1970",
+        "word": "a9bd7bfd",
+        "reason": "UIEquipPageScrollList.OnChangeValueScrollRect entry: x0 = the key page list, whose ScrollRect (+0x28) recycles its slots and shifts the content by a row as it scrolls; its drags are applied from the pointer's last step, not from where the drag began, or each shift is undone by the next frame"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 11,
+        "offset": "0x29716f0",
+        "word": "a9bf7bfd",
+        "reason": "ScrollRect.OnEndDrag entry: x0 = the list; a recycling list gets the velocity of the pointer's last steps, not the one its content's shifts made up"
       }
     ]
   }

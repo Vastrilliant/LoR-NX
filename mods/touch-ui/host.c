@@ -2,6 +2,7 @@
 #include "front.h"
 #include "dm_input.h"
 #include "hle_mods_gen.h"
+#include <time.h>
 
 void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 int dm_touchscreen_mode(void);
@@ -52,11 +53,15 @@ static uint8_t *main_base(void) {
 #define K_SR_DRAG 0x2971720u
 #define K_COMPONENT_GET_TRANSFORM 0x19AE1D0u
 #define K_TRANSFORM_GET_PARENT 0x19BC440u
+#define K_TRANSFORM_GET_LOSSY_SCALE 0x19BFA20u
 #define F_SR_INERTIA 0x2Cu
 #define F_SR_DECELERATION 0x30u
 #define F_SR_POINTER_START 0x68u
 #define F_SR_CONTENT_START 0x70u
 #define F_SR_VELOCITY 0xB0u
+#define F_SR_VIEW_RECT 0x78u
+#define F_SR_DRAGGING 0xB8u
+#define F_EQUIP_LIST_SCROLL_RECT 0x28u
 #define F_SR_PREV_POSITION 0xBCu
 #define F_EVENT_ELIGIBLE 0xF8u
 #define F_EVENT_POSITION 0x100u
@@ -64,6 +69,12 @@ static uint8_t *main_base(void) {
 #define DEFAULT_DECELERATION 0.135f
 #define MAX_RECTS 64
 #define MAX_DEPTH 32
+#define MAX_RECYCLING 8
+#define N_SAMPLES 8
+#define STALE_DRAG_MS 250u
+#define RELEASE_WINDOW_MS 120u
+#define MIN_RELEASE_SPAN_S 0.016f
+#define MAX_LOGGED_PER_LIST 50
 
 static void *s_rects[MAX_RECTS];
 static int s_nrects;
@@ -130,17 +141,115 @@ static void forward_run(uint64_t *r, int p) {
     }
 }
 
-static void log_list_drag(void *rect, void *event) {
-    static int n_log;
-    if (n_log++ >= 200) return;
+typedef struct { float x, y, z; } V3;
+
+static struct recycling {
+    void *rect;
+    int have_prev;
+    int n_logged;
+    float prev_x, prev_y;
+    int n, head;
+    uint64_t t[N_SAMPLES];
+    float y[N_SAMPLES];
+} s_rec[MAX_RECYCLING];
+static int s_nrec;
+static void *s_rebase_rect;
+static void *s_rebase_event;
+
+static uint64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+static struct recycling *rec_find(void *rect) {
+    for (int i = 0; i < s_nrec; i++) if (s_rec[i].rect == rect) return &s_rec[i];
+    return NULL;
+}
+
+static void rec_add(void *rect) {
+    if (!rect || rec_find(rect) || s_nrec >= MAX_RECYCLING) return;
+    s_rec[s_nrec].rect = rect;
+    s_nrec++;
+    LOG("[mod touch-ui] list %p recycles its slots while it scrolls: its drags are applied step by step", rect);
+}
+
+static void rec_sample(struct recycling *rc, uint64_t t, float y) {
+    rc->head = (rc->head + 1) % N_SAMPLES;
+    rc->t[rc->head] = t;
+    rc->y[rc->head] = y;
+    if (rc->n < N_SAMPLES) rc->n++;
+}
+
+static void rebase_run(uint64_t *r, int p) {
+    (void)r; (void)p;
+    FN(K_SR_BEGIN_DRAG, void, void *, void *, void *)(s_rebase_rect, s_rebase_event, NULL);
+}
+
+static void log_list_drag(void *rect, void *event, struct recycling *rc) {
+    static void *other_rect[MAX_RECYCLING];
+    static int other_n[MAX_RECYCLING];
+    int *n_logged = rc ? &rc->n_logged : NULL;
+    if (!n_logged) {
+        for (int i = 0; i < MAX_RECYCLING; i++) {
+            if (other_rect[i] == rect || !other_rect[i]) { other_rect[i] = rect; n_logged = &other_n[i]; break; }
+        }
+    }
+    if (!n_logged || (*n_logged)++ >= MAX_LOGGED_PER_LIST) return;
     const float *start = (const float *)((uintptr_t)rect + F_SR_POINTER_START);
     const float *content = (const float *)((uintptr_t)rect + F_SR_CONTENT_START);
     const float *vel = (const float *)((uintptr_t)rect + F_SR_VELOCITY);
     const float *prev = (const float *)((uintptr_t)rect + F_SR_PREV_POSITION);
     const float *pos = (const float *)((uintptr_t)event + F_EVENT_POSITION);
     const float *delta = (const float *)((uintptr_t)event + F_EVENT_DELTA);
-    LOG("[mod touch-ui] list %p drag: pointer (%.1f,%.1f) delta (%.1f,%.1f); pointerStart (%.1f,%.1f) contentStart (%.1f,%.1f) prev (%.1f,%.1f) velocity (%.1f,%.1f)",
-        rect, pos[0], pos[1], delta[0], delta[1], start[0], start[1], content[0], content[1], prev[0], prev[1], vel[0], vel[1]);
+    LOG("[mod touch-ui] list %p%s drag: pointer (%.1f,%.1f) delta (%.1f,%.1f); pointerStart (%.1f,%.1f) contentStart (%.1f,%.1f) prev (%.1f,%.1f) velocity (%.1f,%.1f)",
+        rect, rc ? " (recycling)" : "", pos[0], pos[1], delta[0], delta[1], start[0], start[1], content[0], content[1], prev[0], prev[1], vel[0], vel[1]);
+}
+
+static void recycling_drag(struct recycling *rc, void *rect, void *event, uint64_t *r, int p) {
+    float *pos = (float *)((uintptr_t)event + F_EVENT_POSITION);
+    uint64_t t = now_ms();
+    uint64_t last = rc->n ? rc->t[rc->head] : 0;
+    if (rc->have_prev && t - last <= STALE_DRAG_MS && *(uint8_t *)((uintptr_t)rect + F_SR_DRAGGING)) {
+        float cur_x = pos[0], cur_y = pos[1];
+        pos[0] = rc->prev_x;
+        pos[1] = rc->prev_y;
+        s_rebase_rect = rect;
+        s_rebase_event = event;
+        dm_mod_gate_run(r, p, rebase_run);
+        pos[0] = cur_x;
+        pos[1] = cur_y;
+    } else {
+        rc->n = 0;
+    }
+    rc->prev_x = pos[0];
+    rc->prev_y = pos[1];
+    rc->have_prev = 1;
+    rec_sample(rc, t, pos[1]);
+}
+
+static void recycling_release(struct recycling *rc, void *rect) {
+    static int n_log;
+    float v = 0.0f;
+    uint64_t t = now_ms();
+    if (rc->have_prev && rc->n >= 2 && t - rc->t[rc->head] <= RELEASE_WINDOW_MS) {
+        int old = rc->head;
+        for (int k = 1; k < rc->n; k++) {
+            int i = (rc->head - k + N_SAMPLES) % N_SAMPLES;
+            if (rc->t[rc->head] - rc->t[i] > RELEASE_WINDOW_MS) break;
+            old = i;
+        }
+        float span = (float)(rc->t[rc->head] - rc->t[old]) / 1000.0f;
+        void *view = ptr_at(rect, F_SR_VIEW_RECT);
+        V3 scale = view ? FN(K_TRANSFORM_GET_LOSSY_SCALE, V3, void *, void *)(view, NULL) : (V3){1.0f, 1.0f, 1.0f};
+        if (span >= MIN_RELEASE_SPAN_S && scale.y > 0.0f) v = (rc->y[rc->head] - rc->y[old]) / span / scale.y;
+    }
+    float *velocity = (float *)((uintptr_t)rect + F_SR_VELOCITY);
+    if (n_log++ < 30) LOG("[mod touch-ui] list %p released: velocity (%.1f,%.1f) from the drag; the list had (%.1f,%.1f)", rect, 0.0, (double)v, (double)velocity[0], (double)velocity[1]);
+    velocity[0] = 0.0f;
+    velocity[1] = v;
+    rc->have_prev = 0;
+    rc->n = 0;
 }
 
 static void on_scroll_ui(uint64_t *r, int p) {
@@ -164,9 +273,22 @@ static void on_scroll_ui(uint64_t *r, int p) {
         s_fwd_kind = p;
         if (s_fwd_event) dm_mod_gate_run(r, p, forward_run);
         break;
-    case 7:
-        if (r[1]) log_list_drag(self, (void *)(uintptr_t)r[1]);
+    case 7: {
+        void *event = (void *)(uintptr_t)r[1];
+        if (!event) break;
+        struct recycling *rc = rec_find(self);
+        log_list_drag(self, event, rc);
+        if (rc) recycling_drag(rc, self, event, r, p);
         break;
+    }
+    case 8:
+        rec_add(ptr_at(self, F_EQUIP_LIST_SCROLL_RECT));
+        break;
+    case 9: {
+        struct recycling *rc = rec_find(self);
+        if (rc) recycling_release(rc, self);
+        break;
+    }
     default:
         break;
     }
