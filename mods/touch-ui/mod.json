@@ -116,6 +116,20 @@
         "offset": "0x29716f0",
         "word": "a9bf7bfd",
         "reason": "ScrollRect.OnEndDrag entry: x0 = the list; a recycling list gets the velocity of the pointer's last steps, not the one its content's shifts made up"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 12,
+        "offset": "0x2971520",
+        "word": "a9be7bfd",
+        "reason": "ScrollRect.OnInitializePotentialDrag entry: a touch on a recycling list stops its glide"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 13,
+        "offset": "0x2971a70",
+        "word": "d10383ff",
+        "reason": "ScrollRect.LateUpdate entry: the slot shifts of a recycling list zero the ScrollRect's velocity (SetNormalizedPosition), so its glide is carried on from the last frame's"
       }
     ]
   }

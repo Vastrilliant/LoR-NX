@@ -2,6 +2,7 @@
 #include "front.h"
 #include "dm_input.h"
 #include "hle_mods_gen.h"
+#include <math.h>
 #include <time.h>
 
 void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
@@ -75,6 +76,8 @@ static uint8_t *main_base(void) {
 #define RELEASE_WINDOW_MS 120u
 #define MIN_RELEASE_SPAN_S 0.016f
 #define MAX_LOGGED_PER_LIST 50
+#define MIN_GLIDE_SPEED 20.0f
+#define MAX_GLIDE_GAP_MS 100u
 
 static void *s_rects[MAX_RECTS];
 static int s_nrects;
@@ -148,6 +151,8 @@ static struct recycling {
     int have_prev;
     int n_logged;
     float prev_x, prev_y;
+    float glide_v;
+    uint64_t glide_t;
     int n, head;
     uint64_t t[N_SAMPLES];
     float y[N_SAMPLES];
@@ -248,8 +253,26 @@ static void recycling_release(struct recycling *rc, void *rect) {
     if (n_log++ < 30) LOG("[mod touch-ui] list %p released: velocity (%.1f,%.1f) from the drag; the list had (%.1f,%.1f)", rect, 0.0, (double)v, (double)velocity[0], (double)velocity[1]);
     velocity[0] = 0.0f;
     velocity[1] = v;
+    rc->glide_v = v;
+    rc->glide_t = t;
     rc->have_prev = 0;
     rc->n = 0;
+}
+
+static void recycling_late(struct recycling *rc, void *rect) {
+    static int n_log;
+    float *velocity = (float *)((uintptr_t)rect + F_SR_VELOCITY);
+    uint64_t t = now_ms();
+    if (*(uint8_t *)((uintptr_t)rect + F_SR_DRAGGING)) { rc->glide_v = 0.0f; return; }
+    float v = velocity[1];
+    if (v == 0.0f && fabsf(rc->glide_v) > MIN_GLIDE_SPEED && t - rc->glide_t <= MAX_GLIDE_GAP_MS) {
+        float dt = (float)(t - rc->glide_t) / 1000.0f;
+        v = rc->glide_v * powf(*(float *)((uintptr_t)rect + F_SR_DECELERATION), dt);
+        velocity[1] = v;
+        if (n_log++ < 30) LOG("[mod touch-ui] list %p: the shift of its slots stopped its glide at %.1f, which goes on at %.1f", rect, (double)rc->glide_v, (double)v);
+    }
+    rc->glide_v = v;
+    rc->glide_t = t;
 }
 
 static void on_scroll_ui(uint64_t *r, int p) {
@@ -287,6 +310,16 @@ static void on_scroll_ui(uint64_t *r, int p) {
     case 9: {
         struct recycling *rc = rec_find(self);
         if (rc) recycling_release(rc, self);
+        break;
+    }
+    case 10: {
+        struct recycling *rc = rec_find(self);
+        if (rc) rc->glide_v = 0.0f;
+        break;
+    }
+    case 11: {
+        struct recycling *rc = rec_find(self);
+        if (rc) recycling_late(rc, self);
         break;
     }
     default:
