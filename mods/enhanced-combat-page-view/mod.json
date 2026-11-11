@@ -1,7 +1,7 @@
 {
   "id": "enhanced-combat-page-view",
   "title": "Enhanced Combat Page View",
-  "description": "Port of Cyaminthe's Enhanced Combat Page View (Workshop 2802216129) as a host callback on an observation gate: the combat pages in the hand are zoomed (x1.25, 25% bigger, by default). For Library of Ruina 1.0.3.",
+  "description": "Port of Cyaminthe's Enhanced Combat Page View (Workshop 2802216129) as a host callback on an observation gate: the combat pages in the hand are zoomed (x1.25, 25% bigger, by default), and in Touchscreen Mode a tap on another page swaps the selected page. For Library of Ruina 1.0.3.",
   "launcher": {
     "env": "DM_MOD_ECPV",
     "category": "Quality of Life",
@@ -19,11 +19,21 @@
       "min": 1.0,
       "max": 1.75,
       "step": 0.05
+    },
+    {
+      "env": "DM_MOD_ECPV_SWAP",
+      "kind": "toggle",
+      "on": "1",
+      "off": "0",
+      "label": "Page Swapping",
+      "note": "Swap selected pages without having to unselect your current page (only available in touchscreen mode)",
+      "default": "1"
     }
   ],
   "game": "Library of Ruina 1.0.3",
   "gates": [
-    "update_pre"
+    "update_pre",
+    "swap_press"
   ],
   "host": "host.c",
   "obs": {
@@ -34,6 +44,12 @@
         "offset": "0x1fdf230",
         "word": "a9bd7bfd",
         "reason": "BattleUnitCardsInHandUI.Update entry (once a frame): x0 = the hand; _cardList at 0x18"
+      },
+      {
+        "gate": "swap_press",
+        "offset": "0x1fd6434",
+        "word": "f9000bf5",
+        "reason": "BattleDiceCardUI.OnPdSubmit entry + 4 (after touch-ui's hover gate at +0): x0 = the pressed combat page, x1 = the event data; GetClickableState refuses a page while the hand holds a selected one, because ShowDetail leaves _bEntered clear"
       }
     ]
   }
