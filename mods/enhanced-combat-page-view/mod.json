@@ -70,9 +70,9 @@
       },
       {
         "gate": "apply_post",
-        "offset": "0x233fdcc",
-        "word": "d0017533",
-        "reason": "SpeedDiceUI.OnClickSpeedDice, after the ReleaseSelectedCard call that follows ApplySelectedCard: the hand is closed and the selected ally die is cleared, so a click on the remembered die selects it again"
+        "offset": "0x233fdd0",
+        "word": "f943ee73",
+        "reason": "SpeedDiceUI.OnClickSpeedDice, after the ReleaseSelectedCard call that follows ApplySelectedCard (one instruction later than the call's return, because the instruction right after the call is an adrp, which an observation gate cannot relocate): the hand is closed and the selected ally die is cleared, so a click on the remembered die selects it again"
       }
     ]
   }
