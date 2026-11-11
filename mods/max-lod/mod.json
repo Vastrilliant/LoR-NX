@@ -1,0 +1,26 @@
+{
+  "id": "max-lod",
+  "title": "MaxLOD",
+  "description": "Forces all textures to use their highest LOD mode. Performance heavy.",
+  "launcher": {
+    "env": "DM_MOD_MAXLOD",
+    "category": "Graphics",
+    "label": "MaxLOD",
+    "note": "Forces all textures to use their highest LOD mode. Performance heavy."
+  },
+  "game": "Library of Ruina 1.0.3",
+  "gates": [
+    "frame_pre"
+  ],
+  "host": "host.c",
+  "obs": {
+    "aeea627ddbd1214764dfef5f965e94a2": [
+      {
+        "gate": "frame_pre",
+        "offset": "0x1ed1a84",
+        "word": "a90167fa",
+        "reason": "InputManager.Update, second instruction (once a frame, in every scene; the entry word is the gate of sharp-text): the callback keeps the global mipmap limit at 0 and every mipmapped Texture2D on ignoreMipmapLimit"
+      }
+    ]
+  }
+}

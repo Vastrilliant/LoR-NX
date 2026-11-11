@@ -7,7 +7,7 @@ Every mod in mods/ is built in unless --mods names a subset. A mod is off at run
 
 For the selected mods it
   - reads the Atmosphere exefs patches (.ips / .pchtxt) of a mod's "exefs" folder and writes each patched word as a switchable patch, DIR/patches.json "SWITCH": the rewriter (dm/tools/patch_nso.py "Switchable patches") makes the word run
-    as the patch says when the mod's env switch is 1 and as the game has it otherwise; the env names go to dm/host/hle_modsw_gen.h, which the host (hle_modsw.c) turns into the switch bytes at the start;  - gives every gate in their mod.json an observation-gate number (32..63) and writes dm/host/hle_mods_gen.h with MODGATE_<MOD>_<GATE> defines;
+    as the patch says when the mod's env switch is 1 and as the game has it otherwise; the env names go to dm/host/hle_modsw_gen.h, which the host (hle_modsw.c) turns into the switch bytes at the start;  - gives every gate in their mod.json an observation-gate number (32..127) and writes dm/host/hle_mods_gen.h with MODGATE_<MOD>_<GATE> defines;
   - copies each mod's host.c to dm/host/hle_mod_<id>.c (the host Makefile takes hle_*.c by wildcard; a mod attaches its callbacks from a constructor, as hle_svc.c does);
   - writes DIR/patches.json, the gates for the rewriter (dm/tools/patch_nso.py reads it through DM_MODS_PATCHES);
   - copies each mod's romfs folder to DIR/romfs/<mod id>/, which build_ipa.sh packs into the app as <App>/modromfs/<mod id>/ (DM_MODS_ROMFS, also exported through $GITHUB_ENV); the host (hle_fs.c) adds
@@ -18,8 +18,8 @@ With --mods none it removes what an earlier run left. In GitHub Actions it also 
 import argparse, glob, json, os, re, shutil, struct, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIRST_GATE, LAST_GATE = 32, 63
-CATEGORIES = ('Performance', 'Quality of Life', 'Fixes', 'Content', 'Miscellaneous', 'Cheats')   # the groups of the launcher's mods page, in the order shown; mod.json launcher "category" (default Miscellaneous)
+FIRST_GATE, LAST_GATE = 32, 127
+CATEGORIES = ('Performance', 'Graphics', 'Quality of Life', 'Fixes', 'Content', 'Miscellaneous', 'Cheats')   # the groups of the launcher's mods page, in the order shown; mod.json launcher "category" (default Miscellaneous)
 NSO_HEADER = 0x100   # Atmosphere's IPS offsets and the .pchtxt addresses of a patch without offset_shift count from the start of the NSO file, whose header is 0x100 bytes: the text starts there
 MAX_SWITCHES = 0xE00   # dm/tools/nso_switch.py SWITCH_MAX
 

@@ -4,7 +4,7 @@
   "description": "Restores visual effects the NX version of the game disables. Performance heavy.",
   "launcher": {
     "env": "DM_MOD_POSTEFFECTS",
-    "category": "Quality of Life",
+    "category": "Graphics",
     "label": "RestoreFX",
     "note": "Restores visual effects the NX version of the game disables. Performance heavy."
   },
