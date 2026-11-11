@@ -26,6 +26,19 @@
       "label": "Enable Depth of Field",
       "note": "The background and character blur of combat.",
       "default": "1"
+    },
+    {
+      "env": "DM_POSTFX_COMBAT_MASK",
+      "kind": "choice",
+      "label": "Combat Bloom Cameras",
+      "note": "Which combat cameras draw bloom.",
+      "default": "24",
+      "options": [
+        ["16", "Effect camera"],
+        ["24", "Character + effect cameras"],
+        ["25", "Background + character + effect cameras"],
+        ["31", "All five cameras"]
+      ]
     }
   ],
   "game": "Library of Ruina 1.0.3",

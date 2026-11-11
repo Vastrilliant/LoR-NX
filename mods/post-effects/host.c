@@ -8,7 +8,7 @@
 //   story_post    CamFilterController.SetFilter, the ldp just before its only return epilogue (x19 = the controller): the story camera's v1 stack (the controller's postProcessor, +0x98) is switched on when the call left it off.
 //                 The game only switches it on for the "Paper" filter, so the stories that do not use it render without the v1 bloom (the 60% of stories without bloom); DM_POSTFX_STORY=0 turns this off
 //   combat_keep   BattleCamManager.ResetCamSetting, the `mov x2, xzr` before each of its five `bl Behaviour.set_enabled(false)` calls (param 0-4: _bgCamTransform, _fgCamTransform, _mainCam, _characterCam, _effectCam; w1 = 0 is already set, x0 = the component
-//                 found on that camera): when it is a PostProcessingBehaviour (v1 stack), the camera's bit is set in DM_POSTFX_COMBAT_MASK (default 25: _bgCamTransform, _characterCam and _effectCam; 31 is all five) and, with DM_POSTFX_V1=0, its bloom model is on (a behaviour with nothing to draw only costs a full-screen pass), w1 becomes 1, so the game's reset leaves the combat bloom behaviours enabled
+//                 found on that camera): when it is a PostProcessingBehaviour (v1 stack), the camera's bit is set in DM_POSTFX_COMBAT_MASK (default 24: _characterCam and _effectCam; 16 is _effectCam alone, 25 adds _bgCamTransform, 31 is all five) and, with DM_POSTFX_V1=0, its bloom model is on (a behaviour with nothing to draw only costs a full-screen pass), w1 becomes 1, so the game's reset leaves the combat bloom behaviours enabled
 //                 and bloom_pre then sets their bloom to DM_POSTFX_COMBAT_INTENSITY (0.15) and DM_POSTFX_COMBAT_THRESHOLD (0.6): the game's own threshold of 1.1 on these cameras cannot be exceeded without HDR, so no combat bloom shows with it;
 //                 DM_POSTFX_COMBAT=0 turns this off; each behaviour it sees is remembered for combat_post
 //   combat_post   BattleCamManager.ResetCamSetting, the ldp x20,x19 before its return (x19 = the manager): every behaviour combat_keep remembered that is still disabled is switched on, so the combat bloom does not depend on the argument write alone
@@ -28,7 +28,7 @@
 //                 param 14 logs the first render of each v1 behaviour, then every power of ten ... (is it ever rendered, and through which camera);
 //                 params 1 and 13 also log the caller and a frame pointer backtrace (main+offset) for the first 8 calls on a behaviour that has no camera yet (m_Camera is set by its first OnPreCull)
 // Documents/env.txt can change the values: v1 DM_POSTFX_BLOOM_INTENSITY (0.25), _THRESHOLD (1.0), _KNEE (0.5), _RADIUS (7.0), _ANTIFLICKER (0), DM_POSTFX_V1_FORCE (0); v2 DM_POSTFX_V2_INTENSITY (1.0), _THRESHOLD (1.0), _KNEE (0.5),
-//   _DIFFUSION (7.0), _CLAMP (65472.0); DM_POSTFX_V1=0 turns the v1 force off, DM_POSTFX_V2=1 turns the v2 force on, DM_POSTFX_STORY (1), DM_POSTFX_COMBAT (1), DM_POSTFX_COMBAT_MASK (25), DM_POSTFX_COMBAT_INTENSITY (0.15), DM_POSTFX_COMBAT_THRESHOLD (0.6) (both only with DM_POSTFX_COMBAT_PC=0), DM_POSTFX_COMBAT_PC (1), DM_POSTFX_UI (1), DM_POSTFX_CAMBLUR (1), DM_POSTFX_BLOOM (1; 0 leaves every bloom of the game as the Switch build has it and switches the combat bloom models off), DM_POSTFX_DOF (1; 0 keeps BlurBackgroundCam and BlurCharacterCam on the Switch path and switches the depthOfField model of the combat behaviours off).
+//   _DIFFUSION (7.0), _CLAMP (65472.0); DM_POSTFX_V1=0 turns the v1 force off, DM_POSTFX_V2=1 turns the v2 force on, DM_POSTFX_STORY (1), DM_POSTFX_COMBAT (1), DM_POSTFX_COMBAT_MASK (24), DM_POSTFX_COMBAT_INTENSITY (0.15), DM_POSTFX_COMBAT_THRESHOLD (0.6) (both only with DM_POSTFX_COMBAT_PC=0), DM_POSTFX_COMBAT_PC (1), DM_POSTFX_UI (1), DM_POSTFX_CAMBLUR (1), DM_POSTFX_BLOOM (1; 0 leaves every bloom of the game as the Switch build has it and switches the combat bloom models off), DM_POSTFX_DOF (1; 0 keeps BlurBackgroundCam and BlurCharacterCam on the Switch path and switches the depthOfField model of the combat behaviours off).
 // Off by default: DM_MOD_POSTEFFECTS=1 turns the callbacks on (the launcher's Mods > RestoreFX switch, or env.txt). The gates are always in the code and pass through while it is off.
 #include "dm.h"
 #include "hle_mods_gen.h"
@@ -95,7 +95,7 @@ static float s_v1_intensity = 0.25f, s_v1_threshold = 1.0f, s_v1_knee = 0.5f, s_
 static float s_combat_intensity = 0.15f, s_combat_threshold = 0.6f;
 static uint8_t s_v1_antiflicker;
 static float s_v2_intensity = 1.0f, s_v2_threshold = 1.0f, s_v2_knee = 0.5f, s_v2_diffusion = 7.0f, s_v2_clamp = 65472.0f;
-static int s_v1_on = 1, s_v2_on = 0, s_v1_force = 0, s_story_on = 1, s_combat_on = 1, s_combat_mask = 25, s_ui_on = 1, s_cam_on = 1, s_dof_on = 1, s_bloom_on = 1, s_combat_pc = 1;
+static int s_v1_on = 1, s_v2_on = 0, s_v1_force = 0, s_story_on = 1, s_combat_on = 1, s_combat_mask = 24, s_ui_on = 1, s_cam_on = 1, s_dof_on = 1, s_bloom_on = 1, s_combat_pc = 1;
 static volatile int s_pc_combat_active;
 static float s_combat_max_threshold = 0.9f;
 
@@ -129,7 +129,7 @@ static int mod_enabled(void) {
         s_v1_force = env_float("DM_POSTFX_V1_FORCE", 0) != 0;
         s_story_on = env_float("DM_POSTFX_STORY", 1) != 0;
         s_combat_on = env_float("DM_POSTFX_COMBAT", 1) != 0;
-        s_combat_mask = (int)env_float("DM_POSTFX_COMBAT_MASK", 25);
+        s_combat_mask = (int)env_float("DM_POSTFX_COMBAT_MASK", 24);
         s_ui_on = env_float("DM_POSTFX_UI", 1) != 0;
         s_cam_on = env_float("DM_POSTFX_CAMBLUR", 1) != 0;
         s_dof_on = env_float("DM_POSTFX_DOF", 1) != 0;
