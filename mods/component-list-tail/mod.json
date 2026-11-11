@@ -1,19 +1,44 @@
 {
   "id": "component-list-tail",
-  "title": "CPU Loop Fix (Library of Ruina)",
-  "description": "Fixes a pointless loop in the Unity binding that copies native GetComponents results into a managed List: after the results are copied, the loop walked every unused slot up to the list's capacity and discarded the result, wasting CPU on every call. Measured at about 10% of main-thread samples, and 26% of main-thread samples in late frames, in a Library of Ruina 1.0.3 capture. For Library of Ruina 1.0.3.",
+  "title": "CPU Optimizations (Library of Ruina)",
+  "description": "CPU savings for the game's per-frame work. The loop fix removes a pointless loop in the Unity binding that copies native GetComponents results into a managed List: after the results are copied, the loop walked every unused slot up to the list's capacity and discarded the result, wasting CPU on every call (about 10% of main-thread samples, and 26% in late frames, in a Library of Ruina 1.0.3 capture). Two optional sub-settings cut more per-frame work: CharacterSpriteMaskController.Update (about 4.5% of main-thread samples) can sync its masks every other frame, and the input module's mouse processing (about 4.9%) can be skipped while the touchscreen pointer is idle. For Library of Ruina 1.0.3.",
   "launcher": {
     "env": "DM_MOD_COMPLISTTAIL", "default": "1",
-    "category": "Fixes",
-    "label": "CPU Loop Fix",
-    "note": "Fixes a pointless loop in the game's code that wasted CPU time every time the UI rebuilt itself. Frees up processing power for smoother performance."
+    "category": "Performance",
+    "label": "CPU Optimizations",
+    "note": "Removes wasted CPU work the game does every frame, mainly while the UI rebuilds. Frees up processing power for smoother performance and lower heat."
   },
+  "settings": [
+    {"env": "DM_MOD_COMPLISTTAIL_MASKS", "kind": "toggle", "label": "Throttle sprite mask updates", "note": "Character sprite masks re-check their sprite renderer every frame. This does it every other frame, so a mask can follow a character's visibility one frame late.", "default": "0"},
+    {"env": "DM_MOD_COMPLISTTAIL_POINTER", "kind": "toggle", "label": "Skip idle pointer updates", "note": "Skips the per-frame UI raycast while the touchscreen pointer is not moving or pressed, and still refreshes it about every 6 frames. Touchscreen Mode only.", "default": "0"}
+  ],
   "game": "Library of Ruina 1.0.3",
+  "gates": [
+    "mask_loop",
+    "mouse_present"
+  ],
+  "host": "host.c",
   "exefs": "exefs",
   "expect": {
     "aeea627ddbd1214764dfef5f965e94a2": {
       "0x73345c": "aa1303e0",
       "0x733560": "aa1503e0"
     }
+  },
+  "obs": {
+    "aeea627ddbd1214764dfef5f965e94a2": [
+      {
+        "gate": "mask_loop",
+        "offset": "0x1d821fc",
+        "word": "f943d6f7",
+        "reason": "CharacterSpriteMaskController.Update, just after mov w20, wzr that starts the enable-sync loop (every path into the loop passes it): x19 = the controller; the host writes w20 = 0x7fffffff to skip the loop on a throttled frame"
+      },
+      {
+        "gate": "mouse_present",
+        "offset": "0x16f0254",
+        "word": "f9415101",
+        "reason": "LOR_InputModule.Process, after ldr x9 of the BaseInput.mousePresent virtual and before its blr: the host may swap x9 for a filter that returns false while the touchscreen pointer is idle, which skips ProcessMouseEvent"
+      }
+    ]
   }
 }
