@@ -1,7 +1,7 @@
 {
   "id": "touch-ui",
   "title": "Touch UI",
-  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis (the combat camera's zoom), to Touchscreen Mode's touchpad and keys, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, and runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once)",
+  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, and runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once)",
   "launcher": {
     "env": "DM_MOD_TOUCHUI",
     "category": "Quality of Life",
@@ -46,6 +46,13 @@
         "offset": "0x1fd6430",
         "word": "a9bd7bfd",
         "reason": "BattleDiceCardUI.OnPdSubmit entry (OnPointerDown branches here): x0 = the combat page in the hand; GetClickableState refuses the press while _bEntered (+0x133) is false, so a finger that lands and presses in one frame is ignored; the host runs the hover (ShowDetail) first"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 2,
+        "offset": "0x2b40c60",
+        "word": "fc1c0fea",
+        "reason": "BattleCamManager.UpdateOtherCameras entry (LateUpdate branches to it every frame): x0 = the BattleCamManager; the touchpad's pinch / wheel notches zoom the main camera here, because the live manual camera (FixedUpdate -> UpdateManualSwitch) reads only the right stick for zoom and never the mouse wheel"
       }
     ]
   }

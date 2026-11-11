@@ -265,8 +265,76 @@ static int on_cursor_icall(const char *name, uint64_t *r) {
     return 0;
 }
 
+#define K_SINGLETON_GET_INSTANCE 0x2D5C5E0u
+#define K_CAMERA_GET_ORTHO 0x17E9450u
+#define K_CAMERA_SET_ORTHO 0x17E94A0u
+#define K_GATE_A_METHOD 0x51D93E8u
+#define K_GATE_B_METHOD 0x51E57D8u
+#define F_CAM_MODE 0x78u
+#define F_CAM_MAIN 0x70u
+#define F_CAM_RETURNING 0xC0u
+#define F_CAM_SCROLLABLE 0x109u
+#define F_CAM_RESET 0x138u
+#define F_CAM_MIN_ORTHO 0x2Cu
+#define F_CAM_STD_ORTHO 0x88u
+#define F_CAM_ZOOM_SPEED 0x98u
+#define F_GATE_A_CHILD 0x58u
+#define F_GATE_A_FLAG 0x18u
+#define F_GATE_B_FLAG1 0x70u
+#define F_GATE_B_FLAG2 0x58u
+#define ZOOM_PER_NOTCH 0.1f
+
+static void *s_zoom_cam;
+static int s_zoom_notches;
+
+static void *singleton_of(uint32_t method_slot) {
+    void **slot = *(void ***)(main_base() + method_slot);
+    if (!slot) return NULL;
+    return ((void *(*)(void *))(main_base() + K_SINGLETON_GET_INSTANCE))(*slot);
+}
+
+static int cam_zoom_blocked(void) {
+    uint8_t *a = singleton_of(K_GATE_A_METHOD);
+    uint8_t *a_child = a ? *(uint8_t **)(a + F_GATE_A_CHILD) : NULL;
+    if (!a_child || a_child[F_GATE_A_FLAG]) return 1;
+    uint8_t *b = singleton_of(K_GATE_B_METHOD);
+    if (!b || b[F_GATE_B_FLAG1]) return 1;
+    b = singleton_of(K_GATE_B_METHOD);
+    return !b || b[F_GATE_B_FLAG2];
+}
+
+static void cam_zoom_run(uint64_t *r, int p) {
+    (void)r; (void)p;
+    uint8_t *cam = s_zoom_cam;
+    void *main_cam = *(void **)(cam + F_CAM_MAIN);
+    if (!main_cam || cam_zoom_blocked()) return;
+    float ortho = ((float (*)(void *, void *))(main_base() + K_CAMERA_GET_ORTHO))(main_cam, NULL);
+    float lo = *(float *)(cam + F_CAM_MIN_ORTHO), hi = *(float *)(cam + F_CAM_STD_ORTHO);
+    float next = ortho - (float)s_zoom_notches * ZOOM_PER_NOTCH * *(float *)(cam + F_CAM_ZOOM_SPEED);
+    if (next > hi) next = hi;
+    if (next < lo) next = lo;
+    static int logged;
+    if (logged++ < 10) LOG("[mod touch-ui] combat camera zoom %d notches: orthographic size %.3f -> %.3f (min %.3f, max %.3f)", s_zoom_notches, ortho, next, lo, hi);
+    ((void (*)(void *, float, void *))(main_base() + K_CAMERA_SET_ORTHO))(main_cam, next, NULL);
+}
+
+static void on_cam_late(uint64_t *r, int p) {
+    if (!mod_enabled() || !dm_touchscreen_mode() || !main_base()) return;
+    static int build_ok = -1;
+    if (build_ok < 0) build_ok = strncmp(dm_main_build(), K_BUILD_ID, 32) == 0;
+    if (!build_ok) return;
+    uint8_t *cam = (uint8_t *)(uintptr_t)r[0];
+    if (!cam || *(int *)(cam + F_CAM_MODE) != 0 || cam[F_CAM_RETURNING] || cam[F_CAM_RESET] || !cam[F_CAM_SCROLLABLE]) return;
+    int notches = frame_now().wheel;
+    if (!notches) return;
+    s_zoom_cam = cam;
+    s_zoom_notches = notches;
+    dm_mod_gate_run(r, p, cam_zoom_run);
+}
+
 static void on_icall_resolved(uint64_t *r, int p) {
     if (p == 1) { on_page_press(r, p); return; }
+    if (p == 2) { on_cam_late(r, p); return; }
     if (!mod_enabled()) return;
     const char *name = (const char *)(uintptr_t)r[19];
     if (!name || !r[0]) return;
