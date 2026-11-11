@@ -340,6 +340,13 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Check:** every menu, the cards, the map's drag and flick worked by touch with it. `DM_TOUCH_LOG=1` logs each gesture entry, and a `DM_CTL` line `drag <x0> <y0> <x1> <y1> [seconds]` moves a finger for testing pans and swipes on the Mac.
 - **Found on:** [Taiko Risshiden V DX](../../dm/games/0100346017304000/README.md) (SDK 12.3.3, Koei Tecmo's KTGL).
 
+### A press that lands with the cursor is ignored by hover-gated buttons
+
+- **Symptom:** in Touchscreen Mode with Pointer Mode Touch, a tap on a button that reacts to hover does nothing the first time; holding the finger on it, lifting and tapping again (before the cursor leaves) works.
+- **Cause:** the finger puts the cursor under it and presses the left button in the same step, so the game's first frame sees the cursor at its new place and the button already down. uGUI's input module processes the press before the pointer enter of that frame (`StandaloneInputModule.ProcessMouseEvent`: `ProcessMousePress`, then `ProcessMove`), so a handler that needs its enter first still sees the pointer outside. Library of Ruina's `BattleDiceCardUI.OnPointerDown` goes through `GetClickableState`, which answers "not clickable" while `_bEntered` is false, and only `OnPointerEnter` (`ShowDetail`) sets it.
+- **Fix:** a game-specific hook, because holding the press back in the host (`dm_mouse_frame` reporting the press two frames after the cursor) costs every tap about 33 ms: the touch-ui mod's gate `icall_resolved` param 1, at `BattleDiceCardUI.OnPdSubmit` entry, runs `ShowDetail` on a page whose `_bEntered` is still false before the game's own check, so the press is accepted in the frame it lands in.
+- **Found on:** [Library of Ruina](../../dm/games/0100E7A019246000/README.md) (the combat pages in the hand).
+
 ### Mouse, keyboard and key code maps
 
 - **Symptom:** the first boot aborted in `hid::GetMouseState` (the SDK's mouse resource was never initialized).

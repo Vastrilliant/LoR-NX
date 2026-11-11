@@ -3,6 +3,7 @@
 #include "dm_input.h"
 #include "hle_mods_gen.h"
 
+void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 int dm_touchscreen_mode(void);
 int dm_opmode(void);
 void dm_nvn_window_size(int *w, int *h);
@@ -56,6 +57,29 @@ static void push_engine_position(float x, float y) {
     *(volatile float *)(mgr + F_MOUSE_Y) = y;
     static int logged;
     if (!logged++) LOG("[mod touch-ui] engine mouse position at InputManager %p fed from the touchpad", (void *)mgr);
+}
+
+#define K_CARD_SHOW_DETAIL 0x1FD6D10u
+#define F_CARD_ENTERED 0x133u
+
+static void *s_press_card;
+
+static void page_hover_run(uint64_t *r, int p) {
+    (void)r; (void)p;
+    static int logged;
+    ((void (*)(void *, void *))(main_base() + K_CARD_SHOW_DETAIL))(s_press_card, NULL);
+    if (logged++ < 5) LOG("[mod touch-ui] combat page %p pressed before its hover: ShowDetail run first", s_press_card);
+}
+
+static void on_page_press(uint64_t *r, int p) {
+    if (!mod_enabled() || !dm_touchscreen_mode() || !main_base()) return;
+    static int build_ok = -1;
+    if (build_ok < 0) build_ok = strncmp(dm_main_build(), K_BUILD_ID, 32) == 0;
+    if (!build_ok) return;
+    uint8_t *card = (uint8_t *)(uintptr_t)r[0];
+    if (!card || card[F_CARD_ENTERED]) return;
+    s_press_card = card;
+    dm_mod_gate_run(r, p, page_hover_run);
 }
 
 static int (*g_unity_frame_count)(void);
@@ -242,7 +266,7 @@ static int on_cursor_icall(const char *name, uint64_t *r) {
 }
 
 static void on_icall_resolved(uint64_t *r, int p) {
-    (void)p;
+    if (p == 1) { on_page_press(r, p); return; }
     if (!mod_enabled()) return;
     const char *name = (const char *)(uintptr_t)r[19];
     if (!name || !r[0]) return;
