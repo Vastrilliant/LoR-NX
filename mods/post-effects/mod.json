@@ -50,7 +50,8 @@
     "cam_platform",
     "probe",
     "combat_keep",
-    "combat_post"
+    "combat_post",
+    "map_filter"
   ],
   "host": "host.c",
   "obs": {
@@ -267,6 +268,12 @@
         "offset": "0x2b40760",
         "word": "a9444ff4",
         "reason": "BattleCamManager.ResetCamSetting, ldp x20,x19 before its return: x19 = the manager"
+      },
+      {
+        "gate": "map_filter",
+        "offset": "0x2b482e0",
+        "word": "a9bc7bfd",
+        "reason": "MapChangeFilter.StartMapChangingEffect, function entry: x0 = the filter (camAry at +0x18, myCam +0x20, postProcess +0x28, _fadeSpeed +0x30, _particleObj +0x68), w1 = Direction, w2 = particleOn"
       }
     ]
   }
