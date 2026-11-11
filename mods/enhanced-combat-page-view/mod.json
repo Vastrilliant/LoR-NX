@@ -1,7 +1,7 @@
 {
   "id": "enhanced-combat-page-view",
   "title": "Enhanced Combat Page View",
-  "description": "Port of Cyaminthe's Enhanced Combat Page View (Workshop 2802216129) as a host callback on an observation gate: the combat pages in the hand are zoomed (x1.25, 25% bigger, by default), and in Touchscreen Mode a tap on another page swaps the selected page. For Library of Ruina 1.0.3.",
+  "description": "Port of Cyaminthe's Enhanced Combat Page View (Workshop 2802216129) as a host callback on an observation gate: the combat pages in the hand are zoomed (x1.25, 25% bigger, by default), and in Touchscreen Mode a tap on another page swaps the selected page, and playing an On-Play page keeps the speed die selected. For Library of Ruina 1.0.3.",
   "launcher": {
     "env": "DM_MOD_ECPV",
     "category": "Quality of Life",
@@ -28,12 +28,23 @@
       "label": "Page Swapping",
       "note": "Swap selected pages without having to unselect your current page (only available in touchscreen mode)",
       "default": "1"
+    },
+    {
+      "env": "DM_MOD_ECPV_KEEP",
+      "kind": "toggle",
+      "on": "1",
+      "off": "0",
+      "label": "Suppress On-Play deselect",
+      "note": "Using an 'On-Play' combat page no longer exits you out of the deck",
+      "default": "0"
     }
   ],
   "game": "Library of Ruina 1.0.3",
   "gates": [
     "update_pre",
-    "swap_press"
+    "swap_press",
+    "apply_pre",
+    "apply_post"
   ],
   "host": "host.c",
   "obs": {
@@ -50,6 +61,18 @@
         "offset": "0x1fd6434",
         "word": "f9000bf5",
         "reason": "BattleDiceCardUI.OnPdSubmit entry + 4 (after touch-ui's hover gate at +0): x0 = the pressed combat page, x1 = the event data; GetClickableState refuses a page while the hand holds a selected one, because ShowDetail leaves _bEntered clear"
+      },
+      {
+        "gate": "apply_pre",
+        "offset": "0x1fdeb00",
+        "word": "d101c3ff",
+        "reason": "BattleUnitCardsInHandUI.ApplySelectedCard entry: x0 = the hand; _selectedCard at 0x60 and _beforeSelectDice (the speed die the hand was opened from) at 0xA0 are still set"
+      },
+      {
+        "gate": "apply_post",
+        "offset": "0x233fdcc",
+        "word": "d0017533",
+        "reason": "SpeedDiceUI.OnClickSpeedDice, after the ReleaseSelectedCard call that follows ApplySelectedCard: the hand is closed and the selected ally die is cleared, so a click on the remembered die selects it again"
       }
     ]
   }

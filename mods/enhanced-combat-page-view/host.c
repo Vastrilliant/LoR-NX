@@ -3,6 +3,8 @@
 // Here every page in the hand gets the same scale (DM_MOD_ECPV_ZOOM, a multiplier, 1.00 to 1.75, default 1.25: 25% bigger; a value of 10 or more is read as the old percentage, 125 = x1.25), selected or not, so there is no selection state to follow and nothing to undo:
 //   update_pre   BattleUnitCardsInHandUI.Update entry (once a frame, x0 = the hand): vibeRect of every page in _cardList gets the scale and the offset (a page that is vibrating is skipped)
 //   swap_press   BattleDiceCardUI.OnPdSubmit entry + 4 (x0 = the pressed page, x1 = the event data), Page Swapping (DM_MOD_ECPV_SWAP, Touchscreen Mode only): with a page selected, a left press on it deselects it the way the hand's right click does (SetToDefault, ReleaseSelectedCard, CloseUnitInformation, UnblockOtherUnitsDice); a left press on another page that GetClickableState would accept deselects the selected page and runs ShowDetail on the pressed one, so the game's own OnPdSubmit then selects it
+//   apply_pre    BattleUnitCardsInHandUI.ApplySelectedCard entry (x0 = the hand), Suppress On-Play deselect (DM_MOD_ECPV_KEEP): remembers the speed die the hand was opened from when the selected page is an On-Play page (range Instance)
+//   apply_post   SpeedDiceUI.OnClickSpeedDice after its BattleUnitInformationUI.ReleaseSelectedCard call: clicks the remembered die again, which reopens the hand the way the player's own click on that die does, after ApplySelectedCard has closed it
 // Not ported: hands of more than 10 pages (the PC mod adds card UI objects), the 65 to 60 rotation constant, and the mouse wheel.
 // Off by default: DM_MOD_ECPV=1 turns the callback on (the launcher's Mods > Enhanced Combat Page View switch, or env.txt). The gate is always in the code and passes through while it is off.
 #include "dm.h"
@@ -19,6 +21,7 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define K_CARD_SHOWDETAIL 0x1FD6D10u
 #define K_CARD_CLICKABLE 0x1FD6520u
 #define K_INPUT_TYPE 0x1BCEAD0u
+#define K_DICE_CLICK 0x233F990u
 #define K_SINGLETON_BM 0x2D5C5E0u
 #define K_SINGLETON_STAGE 0x2D5CA30u
 #define K_INFO_RELEASE 0x21C8C60u
@@ -27,6 +30,12 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define S_MI_STAGE 0x51C6C60u
 
 #define F_HAND_SELECTED 0x60
+#define F_HAND_BEFORE_DICE 0xA0
+#define F_CARD_MODEL 0x128
+#define F_MODEL_XML 0x18
+#define F_XML_SPEC 0x50
+#define F_SPEC_RANGE 0x10
+#define RANGE_INSTANCE 5
 #define F_CARD_ENTERED 0x133
 #define F_EVENT_BUTTON 0x144
 #define F_STAGE_MODE 0xE0
@@ -48,6 +57,7 @@ typedef struct { float x, y, z; } v3;
 static uint8_t *s_main;
 static int g_logged;
 static void *s_hand;
+static void *s_keep_die;
 
 static uint8_t *main_base(void) {
     if (!s_main)
@@ -163,6 +173,36 @@ static void swap_run(uint64_t *r, int param) {
     LOG("[mod enhanced-combat-page-view] page %#llx swapped in for %#llx", (unsigned long long)(uintptr_t)card, (unsigned long long)(uintptr_t)selected);
 }
 
+static int keep_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DM_MOD_ECPV_KEEP");
+        on = v && v[0] && atoi(v) != 0;
+        LOG("[mod enhanced-combat-page-view] suppress on-play deselect %s (DM_MOD_ECPV_KEEP=%s)", on ? "on" : "off", v ? v : "unset");
+    }
+    return on;
+}
+
+static void apply_pre_run(uint64_t *r, int param) {
+    (void)param;
+    s_keep_die = NULL;
+    if (!main_base() || !keep_on()) return;
+    void *hand = (void *)r[0];
+    void *model = field(field(hand, F_HAND_SELECTED), F_CARD_MODEL);
+    void *spec = field(field(model, F_MODEL_XML), F_XML_SPEC);
+    if (!spec || *(const int *)((uintptr_t)spec + F_SPEC_RANGE) != RANGE_INSTANCE) return;
+    s_keep_die = field(hand, F_HAND_BEFORE_DICE);
+}
+
+static void apply_post_run(uint64_t *r, int param) {
+    (void)r; (void)param;
+    void *die = s_keep_die;
+    s_keep_die = NULL;
+    if (!die || !main_base()) return;
+    FN(K_DICE_CLICK, void, void *, const void *)(die, NULL);
+    LOG("[mod enhanced-combat-page-view] on-play page played, speed die %#llx selected again", (unsigned long long)(uintptr_t)die);
+}
+
 static int mod_enabled(void) {
     static int on = -1;
     if (on < 0) {
@@ -175,8 +215,12 @@ static int mod_enabled(void) {
 
 static void on_update_pre(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, update_run); }
 static void on_swap_press(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, swap_run); }
+static void on_apply_pre(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, apply_pre_run); }
+static void on_apply_post(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, apply_post_run); }
 
 __attribute__((constructor)) static void mod_enhanced_combat_page_view_attach(void) {
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_UPDATE_PRE, on_update_pre);
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_SWAP_PRESS, on_swap_press);
+    gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_APPLY_PRE, on_apply_pre);
+    gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_APPLY_POST, on_apply_post);
 }
