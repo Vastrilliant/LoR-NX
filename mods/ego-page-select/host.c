@@ -37,6 +37,10 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 // A press held on a card for at least this long is "look at this page": the description stays open while the finger is down and the release does not pick the page.
 #define HOLD_MS 350u
 
+#define ENTER_TICKS 2
+#define SWITCH_TICKS 4
+#define LEAVE_TICKS 8
+
 #define FN(rva, ret, ...) ((ret (*)(__VA_ARGS__))(main_base() + (rva)))
 
 static uint8_t *main_base(void) {
@@ -64,7 +68,10 @@ static void *s_pick_slot;
 static void *s_raycast_ui;
 static void *s_left_event;     // the left mouse button's PointerEventData: the input module reuses one object for it, so what ReleaseMouse sees of it is what every frame has
 static void *s_hover_slot;     // the slot whose hover the mod started (finger down on its card)
-static uint64_t s_hover_ms;    // when the finger went down on it
+static void *s_cand_slot;
+static int s_cand_n;
+static void *s_down_slot;
+static uint64_t s_down_ms;
 
 static void *ptr_at(void *self, uintptr_t off) { return self ? *(void *const *)((uintptr_t)self + off) : NULL; }
 static int byte_at(void *self, uintptr_t off) { return self ? *(const uint8_t *)((uintptr_t)self + off) : 0; }
@@ -219,18 +226,50 @@ static void set_hover(void *slot) {
     if (slot == s_hover_slot) return;
     if (s_hover_slot) hover(s_hover_slot, 0);
     s_hover_slot = slot;
-    if (slot) { hover(slot, 1); s_hover_ms = now_ms(); }
-    if (n_log++ < 30) LOG("[mod ego-page-select] hover %s", slot ? "on a card" : "off");
+    if (slot) hover(slot, 1);
+    if (n_log++ < 60) LOG("[mod ego-page-select] hover %s at %llu ms", slot ? "on a card" : "off", (unsigned long long)now_ms());
+}
+
+static void hover_follow(void *seen) {
+    if (seen == s_hover_slot) { s_cand_slot = NULL; s_cand_n = 0; return; }
+    if (seen != s_cand_slot) { s_cand_slot = seen; s_cand_n = 0; }
+    int need = !s_hover_slot ? ENTER_TICKS : seen ? SWITCH_TICKS : LEAVE_TICKS;
+    if (++s_cand_n < need) return;
+    s_cand_slot = NULL;
+    s_cand_n = 0;
+    set_hover(seen);
+}
+
+static void press_forget(void) {
+    s_down_ms = 0;
+    s_down_slot = NULL;
 }
 
 // Every frame while the EGO selection is open (LOR_InputModule.Process entry): a finger down on a card is the hover the game expects from a cursor, so the card opens its
-// description and highlights while it is held, and closes them when the finger leaves the card or lifts.
+// description and highlights while it is held, and closes them when the finger leaves the card or lifts (hover_follow decides when).
 static void tick_run(uint64_t *r, int p) {
     (void)r; (void)p;
+    static int n_diag;
+    static void *last_go, *last_seen;
+    static int last_down = -1;
     void *event = s_left_event;
     if (!ego_open(s_levelup)) { s_hover_slot = NULL; return; }
     int down = byte_at(event, F_EVENT_BUTTON) == 0 && byte_at(event, F_EVENT_ELIGIBLE);
-    set_hover(down ? slot_under(ptr_at(event, F_EVENT_CURRENT_RAYCAST_GO)) : NULL);
+    void *go = ptr_at(event, F_EVENT_CURRENT_RAYCAST_GO);
+    void *seen = down ? slot_under(go) : NULL;
+    if (down) {
+        if (!s_down_ms) s_down_ms = now_ms();
+        if (seen) s_down_slot = seen;
+    } else {
+        press_forget();
+    }
+    if ((down != last_down || seen != last_seen || (down && go != last_go)) && n_diag++ < 150) {
+        char chain[320];
+        chain_of_tf(tf_of_go(go), chain, sizeof chain);
+        LOG("[mod ego-page-select] tick %llu ms: down %d, hit %p [%s], slot %p, hovered %p, pointerEnter %p", (unsigned long long)now_ms(), down, go, chain, seen, s_hover_slot, ptr_at(event, 0x20u));
+    }
+    last_down = down; last_go = go; last_seen = seen;
+    hover_follow(seen);
 }
 
 // Runs on the guest stack (dm_mod_gate_run) at LOR_InputModule.ReleaseMouse entry while the EGO selection is open.
@@ -257,11 +296,15 @@ static void release_run(uint64_t *r, int p) {
         return;
     }
     void *slot = slot_under(over);
+    if (!slot && s_down_ms) slot = s_down_slot;
+    uint64_t held = s_down_ms ? now_ms() - s_down_ms : 0;
+    press_forget();
+    s_cand_slot = NULL;
+    s_cand_n = 0;
     if (!slot) {
         if (n_nohit++ < 20) LOG("[mod ego-page-select] tap over %p belongs to no single EGO card", over);
         return;
     }
-    uint64_t held = (s_hover_slot == slot) ? now_ms() - s_hover_ms : 0;
     if (held >= HOLD_MS) {
         // Looked at, not picked: the next frame's tick sees the finger up and closes the description.
         if (n_hold++ < 20) LOG("[mod ego-page-select] card %p held %llu ms: shown, not picked", slot, (unsigned long long)held);
@@ -295,12 +338,18 @@ static void on_ego_ui(uint64_t *r, int p) {
         s_levelup = self;
         s_pressed = NULL;
         s_hover_slot = NULL;
+        s_cand_slot = NULL;
+        s_cand_n = 0;
+        press_forget();
         if (logged_open++ < 10) LOG("[mod ego-page-select] InitEgo: LevelUpUI %p", self);
         break;
     case 2:
         if (s_levelup == self) s_levelup = NULL;
         s_pressed = NULL;
         s_hover_slot = NULL;
+        s_cand_slot = NULL;
+        s_cand_n = 0;
+        press_forget();
         break;
     case 3:
         if (!self) break;
