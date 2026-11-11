@@ -53,6 +53,55 @@
         "offset": "0x2b40c60",
         "word": "fc1c0fea",
         "reason": "BattleCamManager.UpdateOtherCameras entry (LateUpdate branches to it every frame): x0 = the BattleCamManager; the touchpad's pinch / wheel notches zoom the main camera here, because the live manual camera (FixedUpdate -> UpdateManualSwitch) reads only the right stick for zoom and never the mouse wheel"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 3,
+        "offset": "0x2970c30",
+        "word": "a9bd7bfd",
+        "reason": "ScrollRect.OnEnable entry: x0 = the list, remembered as a scroll list; inertia is switched on for dragging"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 4,
+        "offset": "0x2970e30",
+        "word": "a9bd7bfd",
+        "reason": "ScrollRect.OnDisable entry: x0 = the list, forgotten"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 5,
+        "offset": "0x28cb4d0",
+        "word": "aa0103e2",
+        "reason": "EventTrigger.OnInitializePotentialDrag entry: x0 = the trigger of a book, page or slot, x1 = the PointerEventData; handed to the list it sits in, which the trigger took the drag from"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 6,
+        "offset": "0x28cb4e0",
+        "word": "aa0103e2",
+        "reason": "EventTrigger.OnBeginDrag entry: the drag the trigger took is begun on the list it sits in, and the press stops being a click"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 7,
+        "offset": "0x28cb430",
+        "word": "aa0103e2",
+        "reason": "EventTrigger.OnDrag entry: the drag is carried on by the list the trigger sits in"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 8,
+        "offset": "0x28cb4f0",
+        "word": "aa0103e2",
+        "reason": "EventTrigger.OnEndDrag entry: the list the trigger sits in ends the drag (its inertia takes over)"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 9,
+        "offset": "0x2971720",
+        "word": "d10183ff",
+        "reason": "ScrollRect.OnDrag entry: x0 = the list, x1 = the PointerEventData; diagnostics log its drag state"
       }
     ]
   }

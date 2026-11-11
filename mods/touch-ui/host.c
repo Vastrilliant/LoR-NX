@@ -44,6 +44,134 @@ static uint8_t *main_base(void) {
     return base;
 }
 
+#define FN(rva, ret, ...) ((ret (*)(__VA_ARGS__))(main_base() + (rva)))
+
+#define K_SR_INIT_POTENTIAL_DRAG 0x2971520u
+#define K_SR_BEGIN_DRAG 0x29715A0u
+#define K_SR_END_DRAG 0x29716F0u
+#define K_SR_DRAG 0x2971720u
+#define K_COMPONENT_GET_TRANSFORM 0x19AE1D0u
+#define K_TRANSFORM_GET_PARENT 0x19BC440u
+#define F_SR_INERTIA 0x2Cu
+#define F_SR_DECELERATION 0x30u
+#define F_SR_POINTER_START 0x68u
+#define F_SR_CONTENT_START 0x70u
+#define F_SR_VELOCITY 0xB0u
+#define F_SR_PREV_POSITION 0xBCu
+#define F_EVENT_ELIGIBLE 0xF8u
+#define F_EVENT_POSITION 0x100u
+#define F_EVENT_DELTA 0x108u
+#define DEFAULT_DECELERATION 0.135f
+#define MAX_RECTS 64
+#define MAX_DEPTH 32
+
+static void *s_rects[MAX_RECTS];
+static int s_nrects;
+static void *s_drag_trigger;
+static void *s_drag_rect;
+
+static void *ptr_at(void *self, uintptr_t off) { return self ? *(void *const *)((uintptr_t)self + off) : NULL; }
+
+static void rect_add(void *rect) {
+    for (int i = 0; i < s_nrects; i++) if (s_rects[i] == rect) return;
+    if (s_nrects < MAX_RECTS) s_rects[s_nrects++] = rect;
+}
+
+static void rect_del(void *rect) {
+    for (int i = 0; i < s_nrects; i++)
+        if (s_rects[i] == rect) { s_rects[i] = s_rects[--s_nrects]; break; }
+    if (s_drag_rect == rect) { s_drag_rect = NULL; s_drag_trigger = NULL; }
+}
+
+static void *tf_of(void *component) { return component ? FN(K_COMPONENT_GET_TRANSFORM, void *, void *, void *)(component, NULL) : NULL; }
+static void *parent_of(void *tf) { return tf ? FN(K_TRANSFORM_GET_PARENT, void *, void *, void *)(tf, NULL) : NULL; }
+
+static void *rect_above(void *trigger) {
+    void *t = parent_of(tf_of(trigger));
+    for (int depth = 0; t && depth < MAX_DEPTH; depth++, t = parent_of(t))
+        for (int i = 0; i < s_nrects; i++)
+            if (tf_of(s_rects[i]) == t) return s_rects[i];
+    return NULL;
+}
+
+static void *s_fwd_trigger;
+static void *s_fwd_event;
+static int s_fwd_kind;
+
+static void forward_run(uint64_t *r, int p) {
+    (void)r; (void)p;
+    void *rect = (s_drag_trigger == s_fwd_trigger) ? s_drag_rect : NULL;
+    if (!rect) rect = rect_above(s_fwd_trigger);
+    static int n_log;
+    if (n_log++ < 40) LOG("[mod touch-ui] drag step %d on trigger %p: list %p", s_fwd_kind, s_fwd_trigger, rect);
+    if (!rect) { s_drag_trigger = NULL; s_drag_rect = NULL; return; }
+    switch (s_fwd_kind) {
+    case 3:
+        s_drag_trigger = s_fwd_trigger;
+        s_drag_rect = rect;
+        FN(K_SR_INIT_POTENTIAL_DRAG, void, void *, void *, void *)(rect, s_fwd_event, NULL);
+        break;
+    case 4:
+        s_drag_trigger = s_fwd_trigger;
+        s_drag_rect = rect;
+        FN(K_SR_BEGIN_DRAG, void, void *, void *, void *)(rect, s_fwd_event, NULL);
+        *(uint8_t *)((uintptr_t)s_fwd_event + F_EVENT_ELIGIBLE) = 0;
+        break;
+    case 5:
+        FN(K_SR_DRAG, void, void *, void *, void *)(rect, s_fwd_event, NULL);
+        break;
+    case 6:
+        FN(K_SR_END_DRAG, void, void *, void *, void *)(rect, s_fwd_event, NULL);
+        s_drag_trigger = NULL;
+        s_drag_rect = NULL;
+        break;
+    default:
+        break;
+    }
+}
+
+static void log_list_drag(void *rect, void *event) {
+    static int n_log;
+    if (n_log++ >= 200) return;
+    const float *start = (const float *)((uintptr_t)rect + F_SR_POINTER_START);
+    const float *content = (const float *)((uintptr_t)rect + F_SR_CONTENT_START);
+    const float *vel = (const float *)((uintptr_t)rect + F_SR_VELOCITY);
+    const float *prev = (const float *)((uintptr_t)rect + F_SR_PREV_POSITION);
+    const float *pos = (const float *)((uintptr_t)event + F_EVENT_POSITION);
+    const float *delta = (const float *)((uintptr_t)event + F_EVENT_DELTA);
+    LOG("[mod touch-ui] list %p drag: pointer (%.1f,%.1f) delta (%.1f,%.1f); pointerStart (%.1f,%.1f) contentStart (%.1f,%.1f) prev (%.1f,%.1f) velocity (%.1f,%.1f)",
+        rect, pos[0], pos[1], delta[0], delta[1], start[0], start[1], content[0], content[1], prev[0], prev[1], vel[0], vel[1]);
+}
+
+static void on_scroll_ui(uint64_t *r, int p) {
+    if (!mod_enabled() || !dm_touchscreen_mode() || !main_base()) return;
+    void *self = (void *)(uintptr_t)r[0];
+    if (!self) return;
+    switch (p) {
+    case 1: {
+        rect_add(self);
+        *(uint8_t *)((uintptr_t)self + F_SR_INERTIA) = 1;
+        float *deceleration = (float *)((uintptr_t)self + F_SR_DECELERATION);
+        if (*deceleration < 0.05f) *deceleration = DEFAULT_DECELERATION;
+        break;
+    }
+    case 2:
+        rect_del(self);
+        break;
+    case 3: case 4: case 5: case 6:
+        s_fwd_trigger = self;
+        s_fwd_event = (void *)(uintptr_t)r[1];
+        s_fwd_kind = p;
+        if (s_fwd_event) dm_mod_gate_run(r, p, forward_run);
+        break;
+    case 7:
+        if (r[1]) log_list_drag(self, (void *)(uintptr_t)r[1]);
+        break;
+    default:
+        break;
+    }
+}
+
 static void push_engine_position(float x, float y) {
     static int build_ok = -1;
     if (build_ok < 0) build_ok = strncmp(dm_main_build(), K_BUILD_ID, 32) == 0;
@@ -335,6 +463,7 @@ static void on_cam_late(uint64_t *r, int p) {
 static void on_icall_resolved(uint64_t *r, int p) {
     if (p == 1) { on_page_press(r, p); return; }
     if (p == 2) { on_cam_late(r, p); return; }
+    if (p > 2) { on_scroll_ui(r, p - 2); return; }
     if (!mod_enabled()) return;
     const char *name = (const char *)(uintptr_t)r[19];
     if (!name || !r[0]) return;
