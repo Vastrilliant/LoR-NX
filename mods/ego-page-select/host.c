@@ -230,9 +230,8 @@ static void set_hover(void *slot) {
     if (n_log++ < 60) LOG("[mod ego-page-select] hover %s at %llu ms", slot ? "on a card" : "off", (unsigned long long)now_ms());
 }
 
-static void hover_follow(void *seen, int down, int moved) {
+static void hover_follow(void *seen) {
     if (seen == s_hover_slot) { s_cand_slot = NULL; s_cand_n = 0; return; }
-    if (down && s_hover_slot && (!seen || !moved)) { s_cand_slot = NULL; s_cand_n = 0; return; }
     if (seen != s_cand_slot) { s_cand_slot = seen; s_cand_n = 0; }
     int need = !s_hover_slot ? ENTER_TICKS : seen ? SWITCH_TICKS : LEAVE_TICKS;
     if (++s_cand_n < need) return;
@@ -247,9 +246,7 @@ static void press_forget(void) {
 }
 
 // Every frame while the EGO selection is open (LOR_InputModule.Process entry): a finger down on a card is the hover the game expects from a cursor, so the card opens its
-// description and highlights while it is held, and closes them when the finger lifts or, after moving, settles on another card (hover_follow decides when). The raycast under a
-// held finger is not stable once the card has grown and its description is open (it can hit the description or a shared layout object, which belongs to no single card), so
-// a hover that has started only ends on release or on a deliberate move to another card, never because the hit stopped resolving to the card.
+// description and highlights while it is held, and closes them when the finger leaves the card or lifts (hover_follow decides when).
 static void tick_run(uint64_t *r, int p) {
     (void)r; (void)p;
     static int n_diag;
@@ -260,13 +257,6 @@ static void tick_run(uint64_t *r, int p) {
     int down = byte_at(event, F_EVENT_BUTTON) == 0 && byte_at(event, F_EVENT_ELIGIBLE);
     void *go = ptr_at(event, F_EVENT_CURRENT_RAYCAST_GO);
     void *seen = down ? slot_under(go) : NULL;
-    int moved = 0;
-    if (down && event) {
-        const float *pos = (const float *)((uintptr_t)event + F_EVENT_POSITION);
-        const float *press = (const float *)((uintptr_t)event + F_EVENT_PRESS_POSITION);
-        float dx = pos[0] - press[0], dy = pos[1] - press[1];
-        moved = dx * dx + dy * dy > TAP_SLOP_PX * TAP_SLOP_PX;
-    }
     if (down) {
         if (!s_down_ms) s_down_ms = now_ms();
         if (seen) s_down_slot = seen;
@@ -279,7 +269,7 @@ static void tick_run(uint64_t *r, int p) {
         LOG("[mod ego-page-select] tick %llu ms: down %d, hit %p [%s], slot %p, hovered %p, pointerEnter %p", (unsigned long long)now_ms(), down, go, chain, seen, s_hover_slot, ptr_at(event, 0x20u));
     }
     last_down = down; last_go = go; last_seen = seen;
-    hover_follow(seen, down, moved);
+    hover_follow(seen);
 }
 
 // Runs on the guest stack (dm_mod_gate_run) at LOR_InputModule.ReleaseMouse entry while the EGO selection is open.

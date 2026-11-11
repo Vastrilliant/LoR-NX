@@ -125,6 +125,37 @@ static void host_get_mouse_scroll_delta(float *out) {
     out[1] = (float)frame_now().wheel;
 }
 
+static float (*g_real_get_axis)(void *);
+static float (*g_real_get_axis_raw)(void *);
+
+static int is_scroll_axis(const void *name) {
+    static const char k[] = "Mouse ScrollWheel";
+    if (!name) return 0;
+    const uint8_t *s = (const uint8_t *)name;
+    if (*(const int32_t *)(s + 0x10) != (int32_t)(sizeof k - 1)) return 0;
+    const uint16_t *c = (const uint16_t *)(s + 0x14);
+    for (size_t i = 0; i < sizeof k - 1; i++)
+        if (c[i] != (uint16_t)k[i]) return 0;
+    return 1;
+}
+
+static float scroll_axis(void) {
+    int notches = frame_now().wheel;
+    static int logged;
+    if (notches && !logged++) LOG("[mod touch-ui] Input.GetAxis(\"Mouse ScrollWheel\") answered from the touchpad wheel (%d notches)", notches);
+    return 0.1f * (float)notches;
+}
+
+static float host_get_axis(void *name) {
+    if (is_scroll_axis(name)) return scroll_axis();
+    return g_real_get_axis ? g_real_get_axis(name) : 0.0f;
+}
+
+static float host_get_axis_raw(void *name) {
+    if (is_scroll_axis(name)) return scroll_axis();
+    return g_real_get_axis_raw ? g_real_get_axis_raw(name) : 0.0f;
+}
+
 static int usage_of_keycode(int code) {
     switch (code) {
     case 27: return 41;
@@ -157,7 +188,7 @@ static int host_get_any_key_down(void) {
     return (frame_now().down & (DM_MOUSE_LEFT | DM_MOUSE_RIGHT)) != 0;
 }
 
-static const struct { const char *name; void (*fn)(void); } k_icalls[] = {
+static const struct { const char *name; void (*fn)(void); void **real; } k_icalls[] = {
     { "GetKeyInt", (void (*)(void))host_get_key },
     { "GetKeyDownInt", (void (*)(void))host_get_key_down },
     { "GetKeyUpInt", (void (*)(void))host_get_key_up },
@@ -168,6 +199,8 @@ static const struct { const char *name; void (*fn)(void); } k_icalls[] = {
     { "get_mousePresent", (void (*)(void))host_get_mouse_present },
     { "get_mousePosition_Injected", (void (*)(void))host_get_mouse_position },
     { "get_mouseScrollDelta_Injected", (void (*)(void))host_get_mouse_scroll_delta },
+    { "GetAxis", (void (*)(void))host_get_axis, (void **)&g_real_get_axis },
+    { "GetAxisRaw", (void (*)(void))host_get_axis_raw, (void **)&g_real_get_axis_raw },
 };
 
 // Pointer Mode "Touch" (the launcher's DM_POINTER_MODE=touch, with Touchscreen Mode): the cursor is the finger, so the game's own cursor (CursorManager draws its textures with
@@ -224,6 +257,7 @@ static void on_icall_resolved(uint64_t *r, int p) {
         size_t n = strlen(k_icalls[i].name);
         if (strncmp(method, k_icalls[i].name, n) || (method[n] != '\0' && method[n] != '(')) continue;
         LOG("[mod touch-ui] %s: icall %#llx replaced by the host's touchpad mouse", name, (unsigned long long)r[0]);
+        if (k_icalls[i].real) *k_icalls[i].real = (void *)(uintptr_t)r[0];
         r[0] = (uint64_t)(uintptr_t)k_icalls[i].fn;
         return;
     }
