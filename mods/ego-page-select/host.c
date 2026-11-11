@@ -230,8 +230,9 @@ static void set_hover(void *slot) {
     if (n_log++ < 60) LOG("[mod ego-page-select] hover %s at %llu ms", slot ? "on a card" : "off", (unsigned long long)now_ms());
 }
 
-static void hover_follow(void *seen) {
+static void hover_follow(void *seen, int down) {
     if (seen == s_hover_slot) { s_cand_slot = NULL; s_cand_n = 0; return; }
+    if (down && s_hover_slot && !seen) { s_cand_slot = NULL; s_cand_n = 0; return; }
     if (seen != s_cand_slot) { s_cand_slot = seen; s_cand_n = 0; }
     int need = !s_hover_slot ? ENTER_TICKS : seen ? SWITCH_TICKS : LEAVE_TICKS;
     if (++s_cand_n < need) return;
@@ -246,7 +247,8 @@ static void press_forget(void) {
 }
 
 // Every frame while the EGO selection is open (LOR_InputModule.Process entry): a finger down on a card is the hover the game expects from a cursor, so the card opens its
-// description and highlights while it is held, and closes them when the finger leaves the card or lifts (hover_follow decides when).
+// description and highlights while it is held. While the finger stays down the hover is kept even when the hit object belongs to no single card (the hover itself changes what is
+// under the finger, which made the card open and close in a loop); it closes when the finger lifts or moves onto another card (hover_follow decides when).
 static void tick_run(uint64_t *r, int p) {
     (void)r; (void)p;
     static int n_diag;
@@ -269,7 +271,7 @@ static void tick_run(uint64_t *r, int p) {
         LOG("[mod ego-page-select] tick %llu ms: down %d, hit %p [%s], slot %p, hovered %p, pointerEnter %p", (unsigned long long)now_ms(), down, go, chain, seen, s_hover_slot, ptr_at(event, 0x20u));
     }
     last_down = down; last_go = go; last_seen = seen;
-    hover_follow(seen);
+    hover_follow(seen, down);
 }
 
 // Runs on the guest stack (dm_mod_gate_run) at LOR_InputModule.ReleaseMouse entry while the EGO selection is open.
