@@ -42,6 +42,7 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define K_OBJECT_GET_NAME 0x19B4080u
 #define K_CAMERA_GET_CULLINGMASK 0x17E9BE0u
 #define K_SHADER_FIND 0x17FBC10u
+#define K_MAPFILTER_SET_ENABLED 0x2B48AE0u
 #define K_BEHAVIOUR_ACTIVE_ENABLED 0x19AE050u
 #define K_GAMEOBJECT_ACTIVE_IN_HIERARCHY 0x19AFE30u
 #define F_OBJECT_CACHEDPTR 0x10
@@ -589,18 +590,31 @@ static void map_update_run(uint64_t *r, int p) {
     if (!start || frame < start) return;
     unsigned long long d = frame - start;
     static unsigned long long last_start;
-    static int done_early, done_late, done_fix;
+    static int done_early, done_late, done_on, done_fix, done_fix2, done_off;
     if (last_start != start) {
         last_start = start;
-        done_early = done_late = done_fix = 0;
+        done_early = done_late = done_on = done_fix = done_fix2 = done_off = 0;
     }
-    if (!done_fix && d >= 1) {
-        done_fix = 1;
-        uint8_t *g = (uint8_t *)ptr(f, F_MCF_GHOST);
-        if (g && !cached_ptr(ptr(g, F_GHOST_FORCEMATERIAL)) && !cached_ptr(ptr(g, F_GHOST_TEMPMATERIAL)) && *(int *)(g + F_GHOST_SHADERCHANGE) == 0 && s_mapfx) {
-            *(int *)(g + F_GHOST_SHADERCHANGE) = 1;
-            LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): ghost %p has no material, asked it to build its own", s_map_start_count, frame, d, (const void *)g);
+    uint8_t *gh = (uint8_t *)ptr(f, F_MCF_GHOST);
+    if (s_mapfx && !done_on && d >= 1) {
+        done_on = 1;
+        int before = gh ? (int)(uint8_t)FN(K_BEHAVIOUR_ACTIVE_ENABLED, int, const void *, const void *)(gh, NULL) : -1;
+        FN(K_MAPFILTER_SET_ENABLED, void, const void *, int, const void *)(f, 1, NULL);
+        LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): enabled the filter's ghost, camera and post-processing (ghost active before %d after %d)", s_map_start_count, frame, d, before,
+            gh ? (int)(uint8_t)FN(K_BEHAVIOUR_ACTIVE_ENABLED, int, const void *, const void *)(gh, NULL) : -1);
+    }
+    if (s_mapfx && gh && ((!done_fix && d >= 3) || (!done_fix2 && d >= 10))) {
+        if (!done_fix) done_fix = 1;
+        else done_fix2 = 1;
+        if (!cached_ptr(ptr(gh, F_GHOST_FORCEMATERIAL)) && !cached_ptr(ptr(gh, F_GHOST_TEMPMATERIAL)) && *(int *)(gh + F_GHOST_SHADERCHANGE) == 0) {
+            *(int *)(gh + F_GHOST_SHADERCHANGE) = 1;
+            LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): ghost %p has no material, asked it to build its own", s_map_start_count, frame, d, (const void *)gh);
         }
+    }
+    if (s_mapfx && !done_off && d >= 180) {
+        done_off = 1;
+        FN(K_MAPFILTER_SET_ENABLED, void, const void *, int, const void *)(f, 0, NULL);
+        LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): disabled the filter's ghost, camera and post-processing again", s_map_start_count, frame, d);
     }
     if (!done_early && d >= 3) done_early = 1;
     else if (!done_late && d >= 40) done_late = 1;
@@ -630,7 +644,7 @@ static void map_update_run(uint64_t *r, int p) {
 
 static void on_map_update(uint64_t *r, int p) {
     if (!mod_enabled() || !s_map_start_frame) return;
-    if ((unsigned long long)dm_nvn_frame_count() - s_map_start_frame > 120) return;
+    if ((unsigned long long)dm_nvn_frame_count() - s_map_start_frame > 200) return;
     dm_mod_gate_run(r, p, map_update_run);
 }
 
