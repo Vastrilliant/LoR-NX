@@ -121,6 +121,7 @@ static int s_v1_on = 1, s_v2_on = 0, s_v1_force = 0, s_story_on = 1, s_combat_on
 static volatile int s_pc_combat_active;
 static volatile unsigned long long s_map_start_frame;
 static volatile int s_map_start_count;
+static int s_mapfx = 1;
 static float s_combat_max_threshold = 0.9f;
 
 static float env_float(const char *name, float def) {
@@ -153,6 +154,7 @@ static int mod_enabled(void) {
         s_v1_force = env_float("DM_POSTFX_V1_FORCE", 0) != 0;
         s_story_on = env_float("DM_POSTFX_STORY", 1) != 0;
         s_combat_on = env_float("DM_POSTFX_COMBAT", 1) != 0;
+        s_mapfx = env_float("DM_POSTFX_MAPFX", 1) != 0;
         s_combat_mask = (int)env_float("DM_POSTFX_COMBAT_MASK", 24);
         s_ui_on = env_float("DM_POSTFX_UI", 1) != 0;
         s_cam_on = env_float("DM_POSTFX_CAMBLUR", 1) != 0;
@@ -577,8 +579,6 @@ static unsigned long long cached_ptr(const void *o) {
     return o ? *(const uint64_t *)((const uint8_t *)o + F_OBJECT_CACHEDPTR) : 0ull;
 }
 
-void dm_gfx_passdump_next(long n);
-
 static void map_update_run(uint64_t *r, int p) {
     (void)p;
     if (!main_base()) return;
@@ -589,15 +589,18 @@ static void map_update_run(uint64_t *r, int p) {
     if (!start || frame < start) return;
     unsigned long long d = frame - start;
     static unsigned long long last_start;
-    static int done_early, done_late, done_dump;
+    static int done_early, done_late, done_fix;
     if (last_start != start) {
         last_start = start;
-        done_early = done_late = done_dump = 0;
+        done_early = done_late = done_fix = 0;
     }
-    if (!done_dump && d >= 12 && s_map_start_count <= 2) {
-        done_dump = 1;
-        dm_gfx_passdump_next(2);
-        LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): pass dump requested for the next 2 frames", s_map_start_count, frame, d);
+    if (!done_fix && d >= 1) {
+        done_fix = 1;
+        uint8_t *g = (uint8_t *)ptr(f, F_MCF_GHOST);
+        if (g && !cached_ptr(ptr(g, F_GHOST_FORCEMATERIAL)) && !cached_ptr(ptr(g, F_GHOST_TEMPMATERIAL)) && *(int *)(g + F_GHOST_SHADERCHANGE) == 0 && s_mapfx) {
+            *(int *)(g + F_GHOST_SHADERCHANGE) = 1;
+            LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): ghost %p has no material, asked it to build its own", s_map_start_count, frame, d, (const void *)g);
+        }
     }
     if (!done_early && d >= 3) done_early = 1;
     else if (!done_late && d >= 40) done_late = 1;
@@ -627,6 +630,7 @@ static void map_update_run(uint64_t *r, int p) {
 
 static void on_map_update(uint64_t *r, int p) {
     if (!mod_enabled() || !s_map_start_frame) return;
+    if ((unsigned long long)dm_nvn_frame_count() - s_map_start_frame > 120) return;
     dm_mod_gate_run(r, p, map_update_run);
 }
 
