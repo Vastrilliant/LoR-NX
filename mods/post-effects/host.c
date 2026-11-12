@@ -11,13 +11,13 @@
 //                 found on that camera): when it is a PostProcessingBehaviour (v1 stack), the camera's bit is set in DM_POSTFX_COMBAT_MASK (default 24: _characterCam and _effectCam; 16 is _effectCam alone, 25 adds _bgCamTransform, 31 is all five) and, with DM_POSTFX_V1=0, its bloom model is on (a behaviour with nothing to draw only costs a full-screen pass), w1 becomes 1, so the game's reset leaves the combat bloom behaviours enabled
 //                 and bloom_pre then sets their bloom to DM_POSTFX_COMBAT_INTENSITY (0.05) and DM_POSTFX_COMBAT_THRESHOLD (0.6): the game's own threshold of 1.1 on these cameras cannot be exceeded without HDR, so no combat bloom shows with it;
 //                 DM_POSTFX_COMBAT=0 turns this off; each behaviour it sees is remembered for combat_post
-//   combat_post   BattleCamManager.ResetCamSetting, the ldp x20,x19 before its return (x19 = the manager): every behaviour combat_keep remembered that is still disabled is switched on, so the combat bloom does not depend on the argument write alone
+//   combat_post   BattleCamManager.ResetCamSetting, the ldp x20,x19 before its return (x19 = the manager): every behaviour combat_keep remembered that is still disabled is switched on, so the combat bloom does not depend on the argument write alone; with DM_POSTFX_COMBAT_HDR=1 (default) it also sets Camera.allowHDR on the manager's _mainCam, _characterCam and _effectCam that DM_POSTFX_COMBAT_MASK selects (bits 4, 8, 16), logs each as `combat hdr: ... allowHDR a -> b`, and when all of them read back true the combat bloom keeps the game's own threshold and intensity
 //   ui_platform   the `cmp w8, #4` of the five `PlatformManager.PlatformType == NintentoSwitch` checks that keep the menu bloom off (param 0 UIController.CallUIPhase, 1 CallUIPhaseAsynchronous, 2 SetBloomeIntensity, 3 SetBloomThreshold, 4 SetBloomSoftKnee):
 //                 w8 = the platform type; a 4 becomes 2 so the game fetches the Bloom of its UI PostProcessVolume (UIController.pp_bloom, never fetched on Switch) and sets its intensity, threshold and soft knee per UI phase as on PC;
 //                 DM_POSTFX_UI=0 turns this off
 //   cam_platform  the `cmp w8, #4` of the four battle camera Switch checks (param 0 BattleCamManager.BlurBackgroundCam, 1 BlurCharacterCam, 2 VignetteCharacterCam keep the PC-only blur and vignette off; param 3 ResetCamSetting makes the Switch build disable the camera behaviours of combat, which PC leaves enabled):
 //                 w8 = the platform type; a 4 becomes 2 so the game switches the background camera's v1 behaviour and starts BlurRoutine (depth of field of the character camera) and VignetteRoutine as on PC; DM_POSTFX_CAMBLUR=0 turns params 0-2 off;
-//                 param 3 (DM_POSTFX_COMBAT_PC, default 1, needs DM_POSTFX_COMBAT) skips the five Behaviour.set_enabled(false) calls as on PC, and while it is active bloom_pre leaves the combat bloom models as the game made them (neither the story values nor the combat values below are written) except that an enabled model's threshold above DM_POSTFX_COMBAT_MAXTHRESHOLD (0.9, the threshold the game itself uses on its one combat camera that blooms; 99 keeps the game's 1.1) is lowered to it; a CamFilterController.SetFilter (stories) ends it; DM_POSTFX_COMBAT_PC=0 gives the combat_keep path back
+//                 param 3 (DM_POSTFX_COMBAT_PC, default 1, needs DM_POSTFX_COMBAT) skips the five Behaviour.set_enabled(false) calls as on PC, and while it is active bloom_pre leaves the combat bloom models as the game made them (neither the story values nor the combat values below are written) except that, only while HDR is not on for the combat cameras, an enabled model's threshold above DM_POSTFX_COMBAT_MAXTHRESHOLD (0.9, the threshold the game itself uses on its one combat camera that blooms; 99 keeps the game's 1.1) is lowered to it and an explicitly set DM_POSTFX_COMBAT_INTENSITY is written; a CamFilterController.SetFilter (stories) ends it; DM_POSTFX_COMBAT_PC=0 gives the combat_keep path back
 //   models        the first OnPreCull of every v1 behaviour logs which of its profile's models are on (fog, depthOfField, motionBlur, bloom, colorGrading, vignette ...) and the depthOfField settings;
 //                 DM_POSTFX_DOF=1 switches the depthOfField model on for the combat behaviours combat_keep kept (default 0)
 //   probe         the entry of the other bloom sources (param: 1 v1 OnEnable, 3 v2 layer OnEnable, 4 v2 layer OnPreCull, 5 Bloom_RFX4.OnRenderImage, 6 RFX4_DistortionAndBloom.LateUpdate,
@@ -28,7 +28,7 @@
 //                 param 14 logs the first render of each v1 behaviour, then every power of ten ... (is it ever rendered, and through which camera);
 //                 params 1 and 13 also log the caller and a frame pointer backtrace (main+offset) for the first 8 calls on a behaviour that has no camera yet (m_Camera is set by its first OnPreCull)
 // Documents/env.txt can change the values: v1 DM_POSTFX_BLOOM_INTENSITY (0.25), _THRESHOLD (1.0), _KNEE (0.5), _RADIUS (7.0), _ANTIFLICKER (0), DM_POSTFX_V1_FORCE (0); v2 DM_POSTFX_V2_INTENSITY (1.0), _THRESHOLD (1.0), _KNEE (0.5),
-//   _DIFFUSION (7.0), _CLAMP (65472.0); DM_POSTFX_V1=0 turns the v1 force off, DM_POSTFX_V2=1 turns the v2 force on, DM_POSTFX_STORY (1), DM_POSTFX_COMBAT (1), DM_POSTFX_COMBAT_MASK (24), DM_POSTFX_COMBAT_INTENSITY (0.05), DM_POSTFX_COMBAT_THRESHOLD (0.6) (both only with DM_POSTFX_COMBAT_PC=0), DM_POSTFX_COMBAT_PC (1), DM_POSTFX_UI (1), DM_POSTFX_CAMBLUR (1), DM_POSTFX_BLOOM (1; 0 leaves every bloom of the game as the Switch build has it and switches the combat bloom models off), DM_POSTFX_DOF (1; 0 keeps BlurBackgroundCam and BlurCharacterCam on the Switch path and switches the depthOfField model of the combat behaviours off).
+//   _DIFFUSION (7.0), _CLAMP (65472.0); DM_POSTFX_V1=0 turns the v1 force off, DM_POSTFX_V2=1 turns the v2 force on, DM_POSTFX_STORY (1), DM_POSTFX_COMBAT (1), DM_POSTFX_COMBAT_MASK (24), DM_POSTFX_COMBAT_INTENSITY (0.05), DM_POSTFX_COMBAT_THRESHOLD (0.6) (both only with DM_POSTFX_COMBAT_PC=0), DM_POSTFX_COMBAT_PC (1), DM_POSTFX_COMBAT_HDR (1), DM_POSTFX_UI (1), DM_POSTFX_CAMBLUR (1), DM_POSTFX_BLOOM (1; 0 leaves every bloom of the game as the Switch build has it and switches the combat bloom models off), DM_POSTFX_DOF (1; 0 keeps BlurBackgroundCam and BlurCharacterCam on the Switch path and switches the depthOfField model of the combat behaviours off).
 // Off by default: DM_MOD_POSTEFFECTS=1 turns the callbacks on (the launcher's Mods > RestoreFX switch, or env.txt). The gates are always in the code and pass through while it is off.
 #include "dm.h"
 #include "hle_mods_gen.h"
@@ -41,6 +41,8 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define K_GAMEOBJECT_GET_LAYER 0x19AFBF0u
 #define K_OBJECT_GET_NAME 0x19B4080u
 #define K_CAMERA_GET_CULLINGMASK 0x17E9BE0u
+#define K_CAMERA_GET_ALLOWHDR 0x17E9150u
+#define K_CAMERA_SET_ALLOWHDR 0x17E91A0u
 #define K_SHADER_FIND 0x17FBC10u
 #define K_MAPFILTER_SET_ENABLED 0x2B48AE0u
 #define K_BEHAVIOUR_ACTIVE_ENABLED 0x19AE050u
@@ -109,6 +111,10 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define F_GHOST_CANVASIMAGE 0x60
 #define F_GHOST_SPRITERENDERER 0x68
 
+#define F_BCM_EFFECTCAM 0x58
+#define F_BCM_CHARACTERCAM 0x60
+#define F_BCM_MAINCAM 0x70
+
 #define F_CFC_BLOOMFILTER 0x20
 #define F_CFC_POSTPROCESSOR 0x98
 #define F_STRING_LENGTH 0x10
@@ -123,6 +129,8 @@ static volatile int s_pc_combat_active;
 static volatile unsigned long long s_map_start_frame;
 static volatile int s_map_start_count;
 static int s_mapfx = 1;
+static int s_combat_hdr = 1, s_combat_intensity_set;
+static volatile int s_hdr_applied;
 static float s_combat_max_threshold = 0.9f;
 
 static float env_float(const char *name, float def) {
@@ -144,6 +152,11 @@ static int mod_enabled(void) {
         s_v1_radius = env_float("DM_POSTFX_BLOOM_RADIUS", s_v1_radius);
         s_v1_antiflicker = (uint8_t)(env_float("DM_POSTFX_BLOOM_ANTIFLICKER", 0) != 0);
         s_combat_intensity = env_float("DM_POSTFX_COMBAT_INTENSITY", s_combat_intensity);
+        {
+            const char *iv = getenv("DM_POSTFX_COMBAT_INTENSITY");
+            s_combat_intensity_set = iv && iv[0];
+        }
+        s_combat_hdr = env_float("DM_POSTFX_COMBAT_HDR", 1) != 0;
         s_combat_threshold = env_float("DM_POSTFX_COMBAT_THRESHOLD", s_combat_threshold);
         s_v2_intensity = env_float("DM_POSTFX_V2_INTENSITY", s_v2_intensity);
         s_v2_threshold = env_float("DM_POSTFX_V2_THRESHOLD", s_v2_threshold);
@@ -284,10 +297,14 @@ static void on_bloom_pre(uint64_t *r, int p) {
             if (dof) dof[F_MODEL_ENABLED] = 0;
         }
         if (!s_bloom_on) bloom[F_MODEL_ENABLED] = 0;
-        else if (was_on && was_t > s_combat_max_threshold) {
-            *(float *)(bloom + F_V1_THRESHOLD) = s_combat_max_threshold;
-            if (is_new)
-                LOG("[mod post-effects] combat: behaviour %p bloom threshold %.3f -> %.3f (a threshold above 1 is never reached by an 8-bit scene)", (const void *)ppb, was_t, s_combat_max_threshold);
+        else if (was_on) {
+            if (!s_hdr_applied && was_t > s_combat_max_threshold) {
+                *(float *)(bloom + F_V1_THRESHOLD) = s_combat_max_threshold;
+                if (is_new)
+                    LOG("[mod post-effects] combat: behaviour %p bloom threshold %.3f -> %.3f (a threshold above 1 is never reached by an 8-bit scene)", (const void *)ppb, was_t, s_combat_max_threshold);
+            }
+            if (!s_hdr_applied && s_combat_intensity_set)
+                *(float *)(bloom + F_V1_INTENSITY) = s_combat_intensity;
         }
         return;
     }
@@ -490,9 +507,36 @@ static void on_story_post(uint64_t *r, int p) {
     if (s_story_on) dm_mod_gate_run(r, p, story_post_run);
 }
 
+static int obj_alive(const void *o);
+
+static void combat_hdr_run(const uint8_t *manager) {
+    static const struct { int off, bit; const char *name; } cams[] = {
+        {F_BCM_MAINCAM, 4, "main"}, {F_BCM_CHARACTERCAM, 8, "character"}, {F_BCM_EFFECTCAM, 16, "effect"},
+    };
+    int all = 1, n = 0;
+    for (int i = 0; i < 3; i++) {
+        if (!(s_combat_mask & cams[i].bit)) continue;
+        n++;
+        uint8_t *cam = (uint8_t *)ptr(manager, cams[i].off);
+        if (!cam || !obj_alive(cam)) {
+            all = 0;
+            continue;
+        }
+        int was = (uint8_t)FN(K_CAMERA_GET_ALLOWHDR, int, void *, const void *)(cam, NULL);
+        if (!was) FN(K_CAMERA_SET_ALLOWHDR, void, void *, int, const void *)(cam, 1, NULL);
+        int now = (uint8_t)FN(K_CAMERA_GET_ALLOWHDR, int, void *, const void *)(cam, NULL);
+        if (!now) all = 0;
+        static int hits;
+        if (hits++ < 32)
+            LOG("[mod post-effects] combat hdr: %s camera %p allowHDR %d -> %d, frame %llu", cams[i].name, (const void *)cam, was, now, (unsigned long long)dm_nvn_frame_count());
+    }
+    s_hdr_applied = n > 0 && all;
+}
+
 static void combat_post_run(uint64_t *r, int p) {
-    (void)r; (void)p;
+    (void)p;
     if (!main_base()) return;
+    if (s_combat_hdr && r[19]) combat_hdr_run((const uint8_t *)(uintptr_t)r[19]);
     for (int i = 0; i < 5; i++) {
         uint8_t *pp = s_combat_ppb[i];
         s_combat_ppb[i] = NULL;

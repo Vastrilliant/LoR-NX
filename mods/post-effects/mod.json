@@ -28,6 +28,15 @@
       "default": "1"
     },
     {
+      "env": "DM_POSTFX_COMBAT_HDR",
+      "kind": "toggle",
+      "on": "1",
+      "off": "0",
+      "label": "Combat HDR",
+      "note": "HDR on the combat cameras, so combat bloom uses the game's own values.",
+      "default": "1"
+    },
+    {
       "env": "DM_POSTFX_COMBAT_MASK",
       "kind": "choice",
       "label": "Combat Bloom Cameras",
