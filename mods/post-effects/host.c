@@ -41,9 +41,6 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define K_GAMEOBJECT_GET_LAYER 0x19AFBF0u
 #define K_OBJECT_GET_NAME 0x19B4080u
 #define K_CAMERA_GET_CULLINGMASK 0x17E9BE0u
-#define K_CAMERA_GET_DEPTH 0x17E9940u
-#define K_RENDERER_GET_SHAREDMATERIAL 0x17FB450u
-#define K_MATERIAL_GET_SHADER 0x1801850u
 #define K_BEHAVIOUR_ACTIVE_ENABLED 0x19AE050u
 #define K_GAMEOBJECT_ACTIVE_IN_HIERARCHY 0x19AFE30u
 #define F_OBJECT_CACHEDPTR 0x10
@@ -572,18 +569,8 @@ static void on_map_filter(uint64_t *r, int p) {
         (const void *)ptr(f, F_MCF_POSTPROCESS), f32(f, F_MCF_FADESPEED), (const void *)particle, particle ? obj_alive(particle) : -1);
 }
 
-static void shader_name_of(const void *renderer, char *out, int cap) {
-    snprintf(out, (size_t)cap, "(none)");
-    if (!obj_alive(renderer)) return;
-    const void *mat = FN(K_RENDERER_GET_SHAREDMATERIAL, const void *, const void *, const void *)(renderer, NULL);
-    if (!obj_alive(mat)) {
-        snprintf(out, (size_t)cap, "material %p (null or destroyed)", mat);
-        return;
-    }
-    const void *sh = FN(K_MATERIAL_GET_SHADER, const void *, const void *, const void *)(mat, NULL);
-    char name[96] = "(null)";
-    if (obj_alive(sh)) string_ascii(FN(K_OBJECT_GET_NAME, const uint8_t *, const void *, const void *)(sh, NULL), name, sizeof name);
-    snprintf(out, (size_t)cap, "material %p shader %p \"%s\"", mat, sh, name);
+static unsigned long long cached_ptr(const void *o) {
+    return o ? *(const uint64_t *)((const uint8_t *)o + F_OBJECT_CACHEDPTR) : 0ull;
 }
 
 static void map_update_run(uint64_t *r, int p) {
@@ -608,24 +595,20 @@ static void map_update_run(uint64_t *r, int p) {
     const uint8_t *particle = ptr(f, F_MCF_PARTICLE);
     const uint8_t *pp = ptr(f, F_MCF_POSTPROCESS);
     const uint8_t *ghost = ptr(f, F_MCF_GHOST);
-    char dc[160], dp[160], dpp[160], dg[160];
-    obj_desc("myCam", cam, dc, sizeof dc);
-    obj_desc("particleObj", particle, dp, sizeof dp);
-    obj_desc("postProcess", pp, dpp, sizeof dpp);
-    obj_desc("ghost", ghost, dg, sizeof dg);
-    LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): %s cullingMask 0x%x depth %.2f; %s; %s; filter active %d arrived %d elapsed %.3f",
-        s_map_start_count, frame, d, dc, obj_alive(cam) ? (unsigned)FN(K_CAMERA_GET_CULLINGMASK, int, const void *, const void *)(cam, NULL) : 0u,
-        obj_alive(cam) ? FN(K_CAMERA_GET_DEPTH, float, const void *, const void *)(cam, NULL) : 0.0f, dp, dpp,
-        obj_alive(f) ? (int)(uint8_t)FN(K_BEHAVIOUR_ACTIVE_ENABLED, int, const void *, const void *)(f, NULL) : -1, f[F_MCF_PARTICLEARRIVED], f32(f, F_MCF_ELAPSED));
+    LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): filter active %d arrived %d elapsed %.3f; myCam %p native %llx; particleObj %p native %llx; postProcess %p native %llx; ghost %p native %llx",
+        s_map_start_count, frame, d, (int)(uint8_t)FN(K_BEHAVIOUR_ACTIVE_ENABLED, int, const void *, const void *)(f, NULL), f[F_MCF_PARTICLEARRIVED], f32(f, F_MCF_ELAPSED), (const void *)cam,
+        cached_ptr(cam), (const void *)particle, cached_ptr(particle), (const void *)pp, cached_ptr(pp), (const void *)ghost, cached_ptr(ghost));
     if (!ghost) return;
-    char ds[200];
     char shader[96];
     string_ascii(ptr(ghost, F_GHOST_SHADER), shader, sizeof shader);
-    shader_name_of(ptr(ghost, F_GHOST_SPRITERENDERER), ds, sizeof ds);
-    LOG("[mod post-effects] map-filter ghost: %s shaderName \"%s\" forceMaterial %p tempMaterial %p defaultMaterial %p canvasImage %p spriteRenderer %p alpha %.3f clip L %.3f R %.3f U %.3f D %.3f; sprite renderer %s",
-        dg, shader, (const void *)ptr(ghost, F_GHOST_FORCEMATERIAL), (const void *)ptr(ghost, F_GHOST_TEMPMATERIAL), (const void *)ptr(ghost, F_GHOST_DEFAULTMATERIAL),
-        (const void *)ptr(ghost, F_GHOST_CANVASIMAGE), (const void *)ptr(ghost, F_GHOST_SPRITERENDERER), f32(ghost, F_GHOST_ALPHA), f32(ghost, F_GHOST_CLIP), f32(ghost, F_GHOST_CLIP + 4),
-        f32(ghost, F_GHOST_CLIP + 8), f32(ghost, F_GHOST_CLIP + 12), ds);
+    const uint8_t *force = ptr(ghost, F_GHOST_FORCEMATERIAL);
+    const uint8_t *temp = ptr(ghost, F_GHOST_TEMPMATERIAL);
+    const uint8_t *def = ptr(ghost, F_GHOST_DEFAULTMATERIAL);
+    const uint8_t *sr = ptr(ghost, F_GHOST_SPRITERENDERER);
+    const uint8_t *img = ptr(ghost, F_GHOST_CANVASIMAGE);
+    LOG("[mod post-effects] map-filter ghost: shaderName \"%s\" forceMaterial %p native %llx tempMaterial %p native %llx defaultMaterial %p native %llx canvasImage %p native %llx spriteRenderer %p native %llx alpha %.3f clip L %.3f R %.3f U %.3f D %.3f",
+        shader, (const void *)force, cached_ptr(force), (const void *)temp, cached_ptr(temp), (const void *)def, cached_ptr(def), (const void *)img, cached_ptr(img), (const void *)sr, cached_ptr(sr),
+        f32(ghost, F_GHOST_ALPHA), f32(ghost, F_GHOST_CLIP), f32(ghost, F_GHOST_CLIP + 4), f32(ghost, F_GHOST_CLIP + 8), f32(ghost, F_GHOST_CLIP + 12));
 }
 
 static void on_map_update(uint64_t *r, int p) {
