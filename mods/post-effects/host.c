@@ -93,7 +93,10 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define F_MCF_CAM 0x20
 #define F_MCF_POSTPROCESS 0x28
 #define F_MCF_FADESPEED 0x30
+#define F_MCF_GHOST 0x60
 #define F_MCF_PARTICLE 0x68
+#define F_MCF_ELAPSED 0x70
+#define F_MCF_PARTICLEARRIVED 0x74
 #define F_ARRAY_LENGTH 0x18
 #define F_GHOST_FORCEMATERIAL 0x18
 #define F_GHOST_SHADER 0x28
@@ -103,9 +106,6 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define F_GHOST_DEFAULTMATERIAL 0x58
 #define F_GHOST_CANVASIMAGE 0x60
 #define F_GHOST_SPRITERENDERER 0x68
-#define F_MCF_GHOST 0x60
-#define F_MCF_PARTICLEARRIVED 0x74
-#define F_MCF_ELAPSED 0x70
 
 #define F_CFC_BLOOMFILTER 0x20
 #define F_CFC_POSTPROCESSOR 0x98
@@ -118,6 +118,8 @@ static uint8_t s_v1_antiflicker;
 static float s_v2_intensity = 1.0f, s_v2_threshold = 1.0f, s_v2_knee = 0.5f, s_v2_diffusion = 7.0f, s_v2_clamp = 65472.0f;
 static int s_v1_on = 1, s_v2_on = 0, s_v1_force = 0, s_story_on = 1, s_combat_on = 1, s_combat_mask = 24, s_ui_on = 1, s_cam_on = 1, s_dof_on = 1, s_bloom_on = 1, s_combat_pc = 1;
 static volatile int s_pc_combat_active;
+static volatile unsigned long long s_map_start_frame;
+static volatile int s_map_start_count;
 static float s_combat_max_threshold = 0.9f;
 
 static float env_float(const char *name, float def) {
@@ -478,68 +480,6 @@ static void story_post_run(uint64_t *r, int p) {
     LOG("[mod post-effects] story: v1 behaviour %p switched on after SetFilter #%d frame %llu", (const void *)pp, n, (unsigned long long)dm_nvn_frame_count());
 }
 
-static void shader_name_of(const void *renderer, char *out, int cap) {
-    snprintf(out, (size_t)cap, "(none)");
-    if (!obj_alive(renderer)) return;
-    const void *mat = FN(K_RENDERER_GET_SHAREDMATERIAL, const void *, const void *, const void *)(renderer, NULL);
-    if (!obj_alive(mat)) {
-        snprintf(out, (size_t)cap, "material %p (null or destroyed)", mat);
-        return;
-    }
-    const void *sh = FN(K_MATERIAL_GET_SHADER, const void *, const void *, const void *)(mat, NULL);
-    char name[96] = "(null)";
-    if (obj_alive(sh)) string_ascii(FN(K_OBJECT_GET_NAME, const uint8_t *, const void *, const void *)(sh, NULL), name, sizeof name);
-    snprintf(out, (size_t)cap, "material %p shader %p \"%s\"", mat, sh, name);
-}
-
-static void map_update_run(uint64_t *r, int p) {
-    (void)p;
-    if (!main_base()) return;
-    const uint8_t *f = (const uint8_t *)(uintptr_t)r[0];
-    if (!f) return;
-    const unsigned long long frame = (unsigned long long)dm_nvn_frame_count();
-    const unsigned long long start = s_map_start_frame;
-    if (!start || frame < start) return;
-    unsigned long long d = frame - start;
-    static unsigned long long last_start;
-    static int done_early, done_late;
-    if (last_start != start) {
-        last_start = start;
-        done_early = done_late = 0;
-    }
-    int which = !done_early && d >= 3 ? 1 : (!done_late && d >= 40 ? 2 : 0);
-    if (!which) return;
-    if (which == 1) done_early = 1;
-    else done_late = 1;
-    const uint8_t *cam = ptr(f, F_MCF_CAM);
-    const uint8_t *particle = ptr(f, F_MCF_PARTICLE);
-    const uint8_t *pp = ptr(f, F_MCF_POSTPROCESS);
-    const uint8_t *ghost = ptr(f, F_MCF_GHOST);
-    char dc[160], dp[160], dpp[160], dg[160];
-    obj_desc("myCam", cam, dc, sizeof dc);
-    obj_desc("particleObj", particle, dp, sizeof dp);
-    obj_desc("postProcess", pp, dpp, sizeof dpp);
-    obj_desc("ghost", ghost, dg, sizeof dg);
-    LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): %s cullingMask 0x%x depth %.2f; %s; %s; filter active %d arrived %d elapsed %.3f",
-        s_map_start_count, frame, d, dc, obj_alive(cam) ? (unsigned)FN(K_CAMERA_GET_CULLINGMASK, int, const void *, const void *)(cam, NULL) : 0u,
-        obj_alive(cam) ? FN(K_CAMERA_GET_DEPTH, float, const void *, const void *)(cam, NULL) : 0.0f, dp, dpp,
-        obj_alive(f) ? (int)(uint8_t)FN(K_BEHAVIOUR_ACTIVE_ENABLED, int, const void *, const void *)(f, NULL) : -1, f[F_MCF_PARTICLEARRIVED], f32(f, F_MCF_ELAPSED));
-    if (!ghost) return;
-    char ds[200];
-    char shader[96];
-    string_ascii(ptr(ghost, F_GHOST_SHADER), shader, sizeof shader);
-    shader_name_of(ptr(ghost, F_GHOST_SPRITERENDERER), ds, sizeof ds);
-    LOG("[mod post-effects] map-filter ghost: %s shaderName \"%s\" forceMaterial %p tempMaterial %p defaultMaterial %p canvasImage %p spriteRenderer %p alpha %.3f clip L %.3f R %.3f U %.3f D %.3f; sprite renderer %s",
-        dg, shader, (const void *)ptr(ghost, F_GHOST_FORCEMATERIAL), (const void *)ptr(ghost, F_GHOST_TEMPMATERIAL), (const void *)ptr(ghost, F_GHOST_DEFAULTMATERIAL),
-        (const void *)ptr(ghost, F_GHOST_CANVASIMAGE), (const void *)ptr(ghost, F_GHOST_SPRITERENDERER), f32(ghost, F_GHOST_ALPHA), f32(ghost, F_GHOST_CLIP), f32(ghost, F_GHOST_CLIP + 4),
-        f32(ghost, F_GHOST_CLIP + 8), f32(ghost, F_GHOST_CLIP + 12), ds);
-}
-
-static void on_map_update(uint64_t *r, int p) {
-    if (!mod_enabled() || !s_map_start_frame) return;
-    dm_mod_gate_run(r, p, map_update_run);
-}
-
 static void on_story_post(uint64_t *r, int p) {
     if (!mod_enabled()) return;
     s_pc_combat_active = 0;
@@ -565,30 +505,6 @@ static void on_combat_post(uint64_t *r, int p) {
 
 static int obj_alive(const void *o) {
     return o && *(const uint64_t *)((const uint8_t *)o + F_OBJECT_CACHEDPTR) != 0;
-}
-
-static volatile unsigned long long s_map_start_frame;
-static volatile int s_map_start_count;
-
-static void on_map_filter(uint64_t *r, int p) {
-    (void)p;
-    if (!mod_enabled()) return;
-    const uint8_t *f = (const uint8_t *)(uintptr_t)r[0];
-    static int hits;
-    int n = ++hits;
-    if (n > 64) return;
-    const unsigned long long frame = (unsigned long long)dm_nvn_frame_count();
-    s_map_start_frame = frame;
-    s_map_start_count = n;
-    if (!f) {
-        LOG("[mod post-effects] map-filter StartMapChangingEffect #%d frame %llu: filter null", n, frame);
-        return;
-    }
-    const uint8_t *ary = ptr(f, F_MCF_CAMARY);
-    const uint8_t *particle = ptr(f, F_MCF_PARTICLE);
-    LOG("[mod post-effects] map-filter StartMapChangingEffect #%d frame %llu: filter %p direction %d particleOn %d camAry %p (%d) myCam %p postProcess %p fadeSpeed %.3f particleObj %p alive %d",
-        n, frame, (const void *)f, (int)(uint32_t)r[1], (int)(r[2] & 1), (const void *)ary, ary ? *(const int *)(ary + F_ARRAY_LENGTH) : -1, (const void *)ptr(f, F_MCF_CAM),
-        (const void *)ptr(f, F_MCF_POSTPROCESS), f32(f, F_MCF_FADESPEED), (const void *)particle, particle && main_base() ? obj_alive(particle) : -1);
 }
 
 static void obj_desc(const char *what, const void *comp, char *out, int cap) {
@@ -633,6 +549,88 @@ static void ui_diag_run(uint64_t *r, int p) {
     const uint8_t *kn = bloom ? ptr(bloom, F_V2_KNEE) : NULL;
     LOG("[mod post-effects] ui diag #%d: pp_bloom %p enabled override %d value %d, intensity override %d value %.3f, threshold override %d value %.3f, knee override %d value %.3f", hits, (const void *)bloom,
         en ? en[P_OVERRIDE] : -1, en ? en[P_BOOL] : -1, in ? in[P_OVERRIDE] : -1, in ? f32(in, P_FLOAT) : -1.0f, th ? th[P_OVERRIDE] : -1, th ? f32(th, P_FLOAT) : -1.0f, kn ? kn[P_OVERRIDE] : -1, kn ? f32(kn, P_FLOAT) : -1.0f);
+}
+
+static void on_map_filter(uint64_t *r, int p) {
+    (void)p;
+    if (!mod_enabled()) return;
+    const uint8_t *f = (const uint8_t *)(uintptr_t)r[0];
+    static int hits;
+    int n = ++hits;
+    if (n > 64) return;
+    const unsigned long long frame = (unsigned long long)dm_nvn_frame_count();
+    s_map_start_frame = frame;
+    s_map_start_count = n;
+    if (!f) {
+        LOG("[mod post-effects] map-filter StartMapChangingEffect #%d frame %llu: filter null", n, frame);
+        return;
+    }
+    const uint8_t *ary = ptr(f, F_MCF_CAMARY);
+    const uint8_t *particle = ptr(f, F_MCF_PARTICLE);
+    LOG("[mod post-effects] map-filter StartMapChangingEffect #%d frame %llu: filter %p direction %d particleOn %d camAry %p (%d) myCam %p postProcess %p fadeSpeed %.3f particleObj %p alive %d",
+        n, frame, (const void *)f, (int)(uint32_t)r[1], (int)(r[2] & 1), (const void *)ary, ary ? *(const int *)(ary + F_ARRAY_LENGTH) : -1, (const void *)ptr(f, F_MCF_CAM),
+        (const void *)ptr(f, F_MCF_POSTPROCESS), f32(f, F_MCF_FADESPEED), (const void *)particle, particle ? obj_alive(particle) : -1);
+}
+
+static void shader_name_of(const void *renderer, char *out, int cap) {
+    snprintf(out, (size_t)cap, "(none)");
+    if (!obj_alive(renderer)) return;
+    const void *mat = FN(K_RENDERER_GET_SHAREDMATERIAL, const void *, const void *, const void *)(renderer, NULL);
+    if (!obj_alive(mat)) {
+        snprintf(out, (size_t)cap, "material %p (null or destroyed)", mat);
+        return;
+    }
+    const void *sh = FN(K_MATERIAL_GET_SHADER, const void *, const void *, const void *)(mat, NULL);
+    char name[96] = "(null)";
+    if (obj_alive(sh)) string_ascii(FN(K_OBJECT_GET_NAME, const uint8_t *, const void *, const void *)(sh, NULL), name, sizeof name);
+    snprintf(out, (size_t)cap, "material %p shader %p \"%s\"", mat, sh, name);
+}
+
+static void map_update_run(uint64_t *r, int p) {
+    (void)p;
+    if (!main_base()) return;
+    const uint8_t *f = (const uint8_t *)(uintptr_t)r[0];
+    if (!f) return;
+    const unsigned long long frame = (unsigned long long)dm_nvn_frame_count();
+    const unsigned long long start = s_map_start_frame;
+    if (!start || frame < start) return;
+    unsigned long long d = frame - start;
+    static unsigned long long last_start;
+    static int done_early, done_late;
+    if (last_start != start) {
+        last_start = start;
+        done_early = done_late = 0;
+    }
+    if (!done_early && d >= 3) done_early = 1;
+    else if (!done_late && d >= 40) done_late = 1;
+    else return;
+    const uint8_t *cam = ptr(f, F_MCF_CAM);
+    const uint8_t *particle = ptr(f, F_MCF_PARTICLE);
+    const uint8_t *pp = ptr(f, F_MCF_POSTPROCESS);
+    const uint8_t *ghost = ptr(f, F_MCF_GHOST);
+    char dc[160], dp[160], dpp[160], dg[160];
+    obj_desc("myCam", cam, dc, sizeof dc);
+    obj_desc("particleObj", particle, dp, sizeof dp);
+    obj_desc("postProcess", pp, dpp, sizeof dpp);
+    obj_desc("ghost", ghost, dg, sizeof dg);
+    LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): %s cullingMask 0x%x depth %.2f; %s; %s; filter active %d arrived %d elapsed %.3f",
+        s_map_start_count, frame, d, dc, obj_alive(cam) ? (unsigned)FN(K_CAMERA_GET_CULLINGMASK, int, const void *, const void *)(cam, NULL) : 0u,
+        obj_alive(cam) ? FN(K_CAMERA_GET_DEPTH, float, const void *, const void *)(cam, NULL) : 0.0f, dp, dpp,
+        obj_alive(f) ? (int)(uint8_t)FN(K_BEHAVIOUR_ACTIVE_ENABLED, int, const void *, const void *)(f, NULL) : -1, f[F_MCF_PARTICLEARRIVED], f32(f, F_MCF_ELAPSED));
+    if (!ghost) return;
+    char ds[200];
+    char shader[96];
+    string_ascii(ptr(ghost, F_GHOST_SHADER), shader, sizeof shader);
+    shader_name_of(ptr(ghost, F_GHOST_SPRITERENDERER), ds, sizeof ds);
+    LOG("[mod post-effects] map-filter ghost: %s shaderName \"%s\" forceMaterial %p tempMaterial %p defaultMaterial %p canvasImage %p spriteRenderer %p alpha %.3f clip L %.3f R %.3f U %.3f D %.3f; sprite renderer %s",
+        dg, shader, (const void *)ptr(ghost, F_GHOST_FORCEMATERIAL), (const void *)ptr(ghost, F_GHOST_TEMPMATERIAL), (const void *)ptr(ghost, F_GHOST_DEFAULTMATERIAL),
+        (const void *)ptr(ghost, F_GHOST_CANVASIMAGE), (const void *)ptr(ghost, F_GHOST_SPRITERENDERER), f32(ghost, F_GHOST_ALPHA), f32(ghost, F_GHOST_CLIP), f32(ghost, F_GHOST_CLIP + 4),
+        f32(ghost, F_GHOST_CLIP + 8), f32(ghost, F_GHOST_CLIP + 12), ds);
+}
+
+static void on_map_update(uint64_t *r, int p) {
+    if (!mod_enabled() || !s_map_start_frame) return;
+    dm_mod_gate_run(r, p, map_update_run);
 }
 
 static void on_ui_platform(uint64_t *r, int p) {
