@@ -41,6 +41,7 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define K_GAMEOBJECT_GET_LAYER 0x19AFBF0u
 #define K_OBJECT_GET_NAME 0x19B4080u
 #define K_CAMERA_GET_CULLINGMASK 0x17E9BE0u
+#define K_SHADER_FIND 0x17FBC10u
 #define K_BEHAVIOUR_ACTIVE_ENABLED 0x19AE050u
 #define K_GAMEOBJECT_ACTIVE_IN_HIERARCHY 0x19AFE30u
 #define F_OBJECT_CACHEDPTR 0x10
@@ -97,7 +98,10 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define F_ARRAY_LENGTH 0x18
 #define F_GHOST_FORCEMATERIAL 0x18
 #define F_GHOST_SHADER 0x28
+#define F_GHOST_ACTIVECHANGE 0x20
 #define F_GHOST_ALPHA 0x30
+#define F_GHOST_SHADERCHANGE 0x48
+#define F_GHOST_ACTIVEUPDATE 0x70
 #define F_GHOST_CLIP 0x38
 #define F_GHOST_TEMPMATERIAL 0x50
 #define F_GHOST_DEFAULTMATERIAL 0x58
@@ -606,6 +610,9 @@ static void map_update_run(uint64_t *r, int p) {
     const uint8_t *def = ptr(ghost, F_GHOST_DEFAULTMATERIAL);
     const uint8_t *sr = ptr(ghost, F_GHOST_SPRITERENDERER);
     const uint8_t *img = ptr(ghost, F_GHOST_CANVASIMAGE);
+    const uint8_t *found = FN(K_SHADER_FIND, const uint8_t *, const void *, const void *)(ptr(ghost, F_GHOST_SHADER), NULL);
+    LOG("[mod post-effects] map-filter ghost shader lookup: Shader.Find result %p native %llx, ShaderChange %d ActiveChange %d ActiveUpdate %d", (const void *)found, cached_ptr(found), *(const int *)(ghost + F_GHOST_SHADERCHANGE),
+        ghost[F_GHOST_ACTIVECHANGE], ghost[F_GHOST_ACTIVEUPDATE]);
     LOG("[mod post-effects] map-filter ghost: shaderName \"%s\" forceMaterial %p native %llx tempMaterial %p native %llx defaultMaterial %p native %llx canvasImage %p native %llx spriteRenderer %p native %llx alpha %.3f clip L %.3f R %.3f U %.3f D %.3f",
         shader, (const void *)force, cached_ptr(force), (const void *)temp, cached_ptr(temp), (const void *)def, cached_ptr(def), (const void *)img, cached_ptr(img), (const void *)sr, cached_ptr(sr),
         f32(ghost, F_GHOST_ALPHA), f32(ghost, F_GHOST_CLIP), f32(ghost, F_GHOST_CLIP + 4), f32(ghost, F_GHOST_CLIP + 8), f32(ghost, F_GHOST_CLIP + 12));
