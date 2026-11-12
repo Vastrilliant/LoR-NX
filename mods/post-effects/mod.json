@@ -51,7 +51,8 @@
     "probe",
     "combat_keep",
     "combat_post",
-    "map_filter"
+    "map_filter",
+    "map_update"
   ],
   "host": "host.c",
   "obs": {
@@ -274,6 +275,12 @@
         "offset": "0x2b482e0",
         "word": "a9bc7bfd",
         "reason": "MapChangeFilter.StartMapChangingEffect, function entry: x0 = the filter (camAry at +0x18, myCam +0x20, postProcess +0x28, _fadeSpeed +0x30, _particleObj +0x68), w1 = Direction, w2 = particleOn"
+      },
+      {
+        "gate": "map_update",
+        "offset": "0x2b49270",
+        "word": "d101c3ff",
+        "reason": "MapChangeFilter.Update, function entry: x0 = the filter"
       }
     ]
   }
