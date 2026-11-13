@@ -17,7 +17,7 @@
 //                 DM_POSTFX_UI=0 turns this off
 //   cam_platform  the `cmp w8, #4` of the four battle camera Switch checks (param 0 BattleCamManager.BlurBackgroundCam, 1 BlurCharacterCam, 2 VignetteCharacterCam keep the PC-only blur and vignette off; param 3 ResetCamSetting makes the Switch build disable the camera behaviours of combat, which PC leaves enabled):
 //                 w8 = the platform type; a 4 becomes 2 so the game switches the background camera's v1 behaviour and starts BlurRoutine (depth of field of the character camera) and VignetteRoutine as on PC; DM_POSTFX_CAMBLUR=0 turns params 0-2 off;
-//                 param 3 (DM_POSTFX_COMBAT_PC, default 1, needs DM_POSTFX_COMBAT) skips the five Behaviour.set_enabled(false) calls as on PC, and while it is active bloom_pre leaves the combat bloom models as the game made them (neither the story values nor the combat values below are written) except that, only while HDR is not on for the combat cameras, an enabled model's threshold above DM_POSTFX_COMBAT_MAXTHRESHOLD (0.9, the threshold the game itself uses on its one combat camera that blooms; 99 keeps the game's 1.1) is lowered to it and an explicitly set DM_POSTFX_COMBAT_INTENSITY is written; a CamFilterController.SetFilter (stories) ends it; DM_POSTFX_COMBAT_PC=0 gives the combat_keep path back
+//                 param 3 (DM_POSTFX_COMBAT_PC, default 1, needs DM_POSTFX_COMBAT) skips the five Behaviour.set_enabled(false) calls as on PC only when DM_POSTFX_COMBAT_MASK selects all five cameras (31); with a smaller mask the calls run and combat_keep keeps only the selected cameras' behaviours enabled, so the others stay off as on the Switch and cost no full-screen pass, and while it is active bloom_pre leaves the combat bloom models as the game made them (neither the story values nor the combat values below are written) except that, only while HDR is not on for the combat cameras, an enabled model's threshold above DM_POSTFX_COMBAT_MAXTHRESHOLD (0.9, the threshold the game itself uses on its one combat camera that blooms; 99 keeps the game's 1.1) is lowered to it and an explicitly set DM_POSTFX_COMBAT_INTENSITY is written; a CamFilterController.SetFilter (stories) ends it; DM_POSTFX_COMBAT_PC=0 gives the combat_keep path back
 //   models        the first OnPreCull of every v1 behaviour logs which of its profile's models are on (fog, depthOfField, motionBlur, bloom, colorGrading, vignette ...) and the depthOfField settings;
 //                 DM_POSTFX_DOF=1 switches the depthOfField model on for the combat behaviours combat_keep kept (default 0)
 //   probe         the entry of the other bloom sources (param: 1 v1 OnEnable, 3 v2 layer OnEnable, 4 v2 layer OnPreCull, 5 Bloom_RFX4.OnRenderImage, 6 RFX4_DistortionAndBloom.LateUpdate,
@@ -717,11 +717,12 @@ static void on_cam_platform(uint64_t *r, int p) {
     if (p == 3) {
         if (!s_combat_on || !s_combat_pc) return;
         if ((uint32_t)r[8] != 4u) return;
-        r[8] = 2;
+        int all = (s_combat_mask & 31) == 31;
+        if (all) r[8] = 2;
         s_pc_combat_active = 1;
         static int combat_hits;
         if (combat_hits++ < 16)
-            LOG("[mod post-effects] combat: ResetCamSetting Switch platform check passed as Steam, the five camera behaviours stay enabled with the game's own bloom values, frame %llu", (unsigned long long)dm_nvn_frame_count());
+            LOG("[mod post-effects] combat: ResetCamSetting %s with the game's own bloom values (mask %d), frame %llu", all ? "Switch platform check passed as Steam, the five camera behaviours stay enabled" : "keeps only the masked cameras' behaviours enabled", s_combat_mask, (unsigned long long)dm_nvn_frame_count());
         return;
     }
     if (!s_cam_on || (p < 2 && !s_dof_on)) return;
