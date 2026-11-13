@@ -106,6 +106,11 @@ static void launcher_done(void) { [g_root startGame]; }
     [self.view addSubview:self.pad];
     self.fps = front_ios_fps_label();   // above the pad, which hides while a controller is connected
     if (self.fps) [self.view addSubview:self.fps];
+    if (getenv("DM_DIRECT_TEST") && atoi(getenv("DM_DIRECT_TEST"))) {
+        for (CALayer *sl in self.pad.layer.sublayers) sl.hidden = YES;
+        self.fps.hidden = YES;
+        LOG("front end: DM_DIRECT_TEST, pad drawing and fps counter hidden");
+    }
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     tv_attach();   // a TV connected while the launcher showed
