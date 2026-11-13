@@ -1078,13 +1078,13 @@ static id<MTLBuffer> g_ubs_buf; static size_t g_ubs_off, g_ubs_size;
 // read the new data: a draw whose uniform binding overlaps a deferred update reads a shadow. When the updates deferred in this pass cover all of the binding the shader can read, the shadow is
 // made of them alone, latest first per byte (exactly what the GPU would read, whatever earlier frames still have in flight); when they cover only part of it, the rest comes from memory (ubp_get).
 // The real copies are encoded in order when the pass ends (rp_end), so later passes and the CPU see them as before. The pass still ends before a draw that would need more: a partly covered binding
-// whose rest memory cannot give, or a read of the deferred data through a vertex, index, indirect or storage buffer (ubd_conflict). Off in TBDR mode unless DM_NVN_UB_DEFER=1 (the depth-stencil look-ahead, ds_scan, then reads on past the updates). DM_NVN_UB_DEFER=0 turns it off
+// whose rest memory cannot give, or a read of the deferred data through a vertex, index, indirect or storage buffer (ubd_conflict). In TBDR mode it stays on unless DM_NVN_UB_DEFER=0 (the depth-stencil look-ahead, ds_scan, then reads on past the updates). DM_NVN_UB_DEFER=0 turns it off
 static size_t arena_alloc(size_t n, __strong id<MTLBuffer> *buf); static inline void args_dirty_all(void); static void ubd_dirty(uint64_t lo, uint64_t hi);
 typedef struct { uint64_t lo, hi, gpu; size_t off; __unsafe_unretained id<MTLBuffer> buf; } ubd_ent;   // data at buf + off (the ubs ring; a ring block replaced meanwhile lives until this submission completes)
 enum { UBD_MAX = 512 };
 static ubd_ent g_ubd[UBD_MAX]; static int g_nubd;
 static uint64_t g_ubd_deferred, g_ubd_conflicts;   // updates deferred, passes ended before a draw that needed more (the residency set line)
-static int ubd_on(void) { static int v = -1, force = 0; if (v < 0) { const char *e = getenv("DM_NVN_UB_DEFER"); v = !(e && !strcmp(e, "0")); force = e && !strcmp(e, "1"); if (!v) MLOG("DM_NVN_UB_DEFER=0: uniform updates inside a pass end the pass as before"); else if (force) MLOG("DM_NVN_UB_DEFER=1: uniform updates inside a pass stay deferred in TBDR mode"); } return v && (force || !tbdr_on()); }
+static int ubd_on(void) { static int v = -1, force = 0; if (v < 0) { const char *e = getenv("DM_NVN_UB_DEFER"); v = !(e && !strcmp(e, "0")); force = e ? !strcmp(e, "1") : tbdr_on(); if (!v) MLOG("DM_NVN_UB_DEFER=0: uniform updates inside a pass end the pass as before"); else if (force) MLOG("DM_NVN_UB_DEFER=1: uniform updates inside a pass stay deferred in TBDR mode"); } return v && (force || !tbdr_on()); }
 void mtl_ubd_stats(uint64_t *deferred, uint64_t *conflicts) { *deferred = g_ubd_deferred; *conflicts = g_ubd_conflicts; }
 // Across passes (DM_NVN_UB_LAZY=n, at most n updates kept past a pass end, default 160; 0 = landed at every pass end as before): the deferred updates are not landed when their pass ends but
 // when something needs the memory itself: a copy or dispatch (they go into that compute encoder first), a draw that reads them other than as a uniform buffer the shadows cover
@@ -9421,7 +9421,7 @@ static lc_group g_lc[LC_MAX]; static int g_nlc;
 static uint64_t g_lc_taken, g_lc_landed, g_lc_dropped;   // clears taken by a later pass / clear-only passes opened / clear-only passes elided
 void mtl_lc_stats(uint64_t *taken, uint64_t *landed, uint64_t *dropped) { *taken = g_lc_taken; *landed = g_lc_landed; *dropped = g_lc_dropped; }
 static int lc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_LAZY_CLEAR"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("DM_NVN_LAZY_CLEAR=0: clears with no draw open a pass of their own as before"); } return v && !tbdr_on(); }
-static int lc_elide_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_LC_ELIDE"); v = e && !strcmp(e, "1"); if (v) MLOG("DM_NVN_LC_ELIDE=1: omit a waiting depth/stencil clear when the submission index proves a later full clear precedes every read"); } return v; }
+static int lc_elide_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_LC_ELIDE"); v = e ? !strcmp(e, "1") : tbdr_on(); if (v) MLOG("DM_NVN_LC_ELIDE=1: omit a waiting depth/stencil clear when the submission index proves a later full clear precedes every read"); } return v; }
 static int lc_same(const p_set_rt *a, int ka, const p_set_rt *b, int kb) {   // the same subresource through the same view (k = 8: depth / stencil)
     uint64_t s1, s2; int l1, l2, x1, x2; rt_sub(a, ka, &s1, &l1, &x1); rt_sub(b, kb, &s2, &l2, &x2);
     if (!s1 || s1 != s2 || l1 != l2 || x1 != x2) return 0;
@@ -10465,7 +10465,7 @@ static void draw_tex(const p_draw_tex *c) {
 }
 static int rce_on(void) {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("DM_NVN_RESOLVE_ELIDE"); v = e && !strcmp(e, "1");
+    if (v < 0) { const char *e = getenv("DM_NVN_RESOLVE_ELIDE"); v = e ? !strcmp(e, "1") : tbdr_on();
         if (v) MLOG("DM_NVN_RESOLVE_ELIDE=1: a whole-texture resolve copy whose destination is overwritten by the next one before anything reads it is not encoded (needs DM_NVN_TBDR=1)"); }
     return v;
 }
@@ -10904,7 +10904,7 @@ static int g_ipc_n;
 static uint64_t g_ipc_clears, g_ipc_chains;
 static int ipc_on(void) {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("DM_NVN_DS_INPASS"); v = e && !strcmp(e, "1");
+    if (v < 0) { const char *e = getenv("DM_NVN_DS_INPASS"); v = e ? !strcmp(e, "1") : tbdr_on();
         if (v) MLOG("DM_NVN_DS_INPASS=1: depth-stencil clears between draws of one pass (a depth-only detour that returns to the pass's targets) no longer end it; the pass's own depth is cleared with a triangle, other targets' clears wait (lazy clears)"); }
     return v;
 }
