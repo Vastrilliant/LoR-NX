@@ -599,8 +599,16 @@ static void ui_diag_run(uint64_t *r, int p) {
         en ? en[P_OVERRIDE] : -1, en ? en[P_BOOL] : -1, in ? in[P_OVERRIDE] : -1, in ? f32(in, P_FLOAT) : -1.0f, th ? th[P_OVERRIDE] : -1, th ? f32(th, P_FLOAT) : -1.0f, kn ? kn[P_OVERRIDE] : -1, kn ? f32(kn, P_FLOAT) : -1.0f);
 }
 
-static void on_map_filter(uint64_t *r, int p) {
+static void map_filter_start_run(uint64_t *r, int p) {
     (void)p;
+    if (!main_base()) return;
+    const uint8_t *f = (const uint8_t *)(uintptr_t)r[0];
+    if (!f) return;
+    FN(K_MAPFILTER_SET_ENABLED, void, const void *, int, const void *)(f, 1, NULL);
+    LOG("[mod post-effects] map-filter #%d frame %llu (+0): enabled the filter's ghost, camera and post-processing at the start of the transition", s_map_start_count, (unsigned long long)dm_nvn_frame_count());
+}
+
+static void on_map_filter(uint64_t *r, int p) {
     if (!mod_enabled()) return;
     const uint8_t *f = (const uint8_t *)(uintptr_t)r[0];
     static int hits;
@@ -618,6 +626,7 @@ static void on_map_filter(uint64_t *r, int p) {
     LOG("[mod post-effects] map-filter StartMapChangingEffect #%d frame %llu: filter %p direction %d particleOn %d camAry %p (%d) myCam %p postProcess %p fadeSpeed %.3f particleObj %p alive %d",
         n, frame, (const void *)f, (int)(uint32_t)r[1], (int)(r[2] & 1), (const void *)ary, ary ? *(const int *)(ary + F_ARRAY_LENGTH) : -1, (const void *)ptr(f, F_MCF_CAM),
         (const void *)ptr(f, F_MCF_POSTPROCESS), f32(f, F_MCF_FADESPEED), (const void *)particle, particle ? obj_alive(particle) : -1);
+    if (s_mapfx) dm_mod_gate_run(r, p, map_filter_start_run);
 }
 
 static unsigned long long cached_ptr(const void *o) {
@@ -643,7 +652,7 @@ static void map_update_run(uint64_t *r, int p) {
     if (s_mapfx && !done_on && d >= 1) {
         done_on = 1;
         int before = gh ? (int)(uint8_t)FN(K_BEHAVIOUR_ACTIVE_ENABLED, int, const void *, const void *)(gh, NULL) : -1;
-        FN(K_MAPFILTER_SET_ENABLED, void, const void *, int, const void *)(f, 1, NULL);
+        if (before != 1) FN(K_MAPFILTER_SET_ENABLED, void, const void *, int, const void *)(f, 1, NULL);
         LOG("[mod post-effects] map-filter #%d frame %llu (+%llu): enabled the filter's ghost, camera and post-processing (ghost active before %d after %d)", s_map_start_count, frame, d, before,
             gh ? (int)(uint8_t)FN(K_BEHAVIOUR_ACTIVE_ENABLED, int, const void *, const void *)(gh, NULL) : -1);
     }
