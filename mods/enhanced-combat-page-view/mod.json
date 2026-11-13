@@ -63,7 +63,8 @@
     "swap_press",
     "apply_pre",
     "apply_post",
-    "info_alpha"
+    "info_alpha",
+    "click_state"
   ],
   "host": "host.c",
   "obs": {
@@ -98,6 +99,12 @@
         "offset": "0x21c56a8",
         "word": "f9406e73",
         "reason": "BattleUnitInformationUI.Update, the instruction after its CanvasGroup.set_alpha call (_canvasGroup at 0xD0): x19 = the panel, and the alpha the game just wrote is still readable, so a callback here can scale it; the game writes it again next frame, which is how the fade reverts"
+      },
+      {
+        "gate": "click_state",
+        "offset": "0x1fd6484",
+        "word": "51000408",
+        "reason": "BattleDiceCardUI.OnPdSubmit, the instruction after its GetClickableState call: x19 = the pressed page, w0 = the state; 2, 3 and 4 make OnPdSubmit call PlayVibeCard (the shake and its sound), 1 calls OnClick, and 0 makes it return, which is what a tap on the selected page that swap_press already handled gets"
       }
     ]
   }

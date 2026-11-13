@@ -3,6 +3,7 @@
 // Here every page in the hand gets the same scale (DM_MOD_ECPV_ZOOM, a multiplier, 1.00 to 1.75, default 1.25: 25% bigger; a value of 10 or more is read as the old percentage, 125 = x1.25), selected or not, so there is no selection state to follow and nothing to undo:
 //   update_pre   BattleUnitCardsInHandUI.Update entry (once a frame, x0 = the hand): vibeRect of every page in _cardList gets the scale and the offset (a page that is vibrating is skipped); then the Hold to On-Play hold advances
 //   swap_press   BattleDiceCardUI.OnPdSubmit entry + 4 (x0 = the pressed page, x1 = the event data): starts the Hold to On-Play hold on a left press of a page that qualifies; then Page Swapping (DM_MOD_ECPV_SWAP, Touchscreen Mode only): with a page selected, a left press on it deselects it the way the hand's right click does (SetToDefault, ReleaseSelectedCard, CloseUnitInformation, UnblockOtherUnitsDice), except on a page the hold is running on, where the deselect waits for the release and happens only if the hold did not complete; a left press on another page that GetClickableState would accept deselects the selected page and runs ShowDetail on the pressed one, so the game's own OnPdSubmit then selects it
+//   click_state  BattleDiceCardUI.OnPdSubmit right after its GetClickableState call (x19 = the pressed page, w0 = the state): when swap_press took the press as a tap on the selected page, w0 becomes CanClick_emotion (0), which OnPdSubmit ignores, so the game's own refusal (PlayVibeCard: the shake and its sound) does not play on top of the deselect
 //   apply_pre    BattleUnitCardsInHandUI.ApplySelectedCard entry (x0 = the hand), Suppress On-Play deselect (DM_MOD_ECPV_KEEP): remembers the speed die the hand was opened from when the selected page is an On-Play page (range Instance)
 //   apply_post   SpeedDiceUI.OnClickSpeedDice after its BattleUnitInformationUI.ReleaseSelectedCard call: clicks the remembered die again, which reopens the hand the way the player's own click on that die does, after ApplySelectedCard has closed it
 //   info_alpha   BattleUnitInformationUI.Update right after its CanvasGroup.set_alpha call (x19 = the panel), Fade info panels (DM_MOD_ECPV_DIM): while the hand holds a selected page, the panel's alpha is cut to 25% (75% transparent) and its CanvasGroup stops blocking raycasts, so taps reach what is behind it; the game writes the alpha again every frame and never touches blocksRaycasts, so the alpha reverts by itself and blocksRaycasts is put back when no page is selected
@@ -120,6 +121,7 @@ static uint8_t *s_main;
 static int g_logged;
 static void *s_hand;
 static void *s_keep_die;
+static void *s_swallow;
 static int s_hand_frame = -1000;
 static int s_dim_evict;
 static struct {
@@ -269,6 +271,7 @@ static void deselect(void *hand) {
 static void swap_run(uint64_t *r, int param) {
     (void)param;
     if (!main_base()) return;
+    s_swallow = NULL;
     void *hand = s_hand, *card = (void *)r[0], *ev = (void *)r[1];
     if (!hand || !card || !ev) return;
     if (FN(K_INPUT_TYPE, int, void *, const void *)(ev, NULL) == INPUT_PAD) return;
@@ -279,6 +282,7 @@ static void swap_run(uint64_t *r, int param) {
     void *selected = field(hand, F_HAND_SELECTED);
     if (!selected) return;
     if (card == selected) {
+        s_swallow = card;
         if (hold_deferred(card)) return;
         deselect(hand);
         LOG("[mod enhanced-combat-page-view] page %#llx deselected by a tap", (unsigned long long)(uintptr_t)card);
@@ -506,6 +510,12 @@ static void on_update_pre(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_r
 static void on_swap_press(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, swap_run); }
 static void on_apply_pre(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, apply_pre_run); }
 static void on_apply_post(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, apply_post_run); }
+static void on_click_state(uint64_t *r, int p) {
+    (void)p;
+    if (!s_swallow || s_swallow != (void *)r[19]) return;
+    s_swallow = NULL;
+    r[0] = 0;
+}
 static void on_info_alpha(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, info_run); }
 
 __attribute__((constructor)) static void mod_enhanced_combat_page_view_attach(void) {
@@ -514,4 +524,5 @@ __attribute__((constructor)) static void mod_enhanced_combat_page_view_attach(vo
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_APPLY_PRE, on_apply_pre);
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_APPLY_POST, on_apply_post);
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_INFO_ALPHA, on_info_alpha);
+    gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_CLICK_STATE, on_click_state);
 }
