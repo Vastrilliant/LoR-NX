@@ -1,7 +1,7 @@
 {
   "id": "component-list-tail",
   "title": "CPU Optimizations (Library of Ruina)",
-  "description": "CPU savings for the game's per-frame work. The loop fix removes a pointless loop in the Unity binding that copies native GetComponents results into a managed List: after the results are copied, the loop walked every unused slot up to the list's capacity and discarded the result, wasting CPU on every call (about 10% of main-thread samples, and 26% in late frames, in a Library of Ruina 1.0.3 capture). Two optional sub-settings cut more per-frame work: CharacterSpriteMaskController.Update (about 4.5% of main-thread samples) can sync its masks every other frame, and the input module's mouse processing (about 4.9%) can be skipped while the touchscreen pointer is idle. For Library of Ruina 1.0.3.",
+  "description": "CPU savings for the game's per-frame work. The loop fix removes a pointless loop in the Unity binding that copies native GetComponents results into a managed List: after the results are copied, the loop walked every unused slot up to the list's capacity and discarded the result, wasting CPU on every call (about 10% of main-thread samples, and 26% in late frames, in a Library of Ruina 1.0.3 capture). Four optional sub-settings cut more per-frame work: CharacterSpriteMaskController.Update (about 4.5% of main-thread samples) can sync its masks every other frame, the input module's mouse processing (about 4.9%) can be skipped while the touchscreen pointer is idle, ClipperRegistry.Cull (RectMask2D clipping and culling, about 21%) can run every other frame, and TextMeshProUGUI.InternalUpdate (the per-frame lossyScale read of every label, about 5%) can check each label every fourth frame. For Library of Ruina 1.0.3.",
   "launcher": {
     "env": "DM_MOD_COMPLISTTAIL", "default": "1",
     "category": "Performance",
@@ -10,12 +10,16 @@
   },
   "settings": [
     {"env": "DM_MOD_COMPLISTTAIL_MASKS", "kind": "toggle", "label": "Throttle sprite mask updates", "note": "Character sprite masks re-check their sprite renderer every frame. This does it every other frame, so a mask can follow a character's visibility one frame late.", "default": "0"},
-    {"env": "DM_MOD_COMPLISTTAIL_POINTER", "kind": "toggle", "label": "Skip idle pointer updates", "note": "Skips the per-frame UI raycast while the touchscreen pointer is not moving or pressed, and still refreshes it about every 6 frames. Touchscreen Mode only.", "default": "0"}
+    {"env": "DM_MOD_COMPLISTTAIL_POINTER", "kind": "toggle", "label": "Skip idle pointer updates", "note": "Skips the per-frame UI raycast while the touchscreen pointer is not moving or pressed, and still refreshes it about every 6 frames. Touchscreen Mode only.", "default": "0"},
+    {"env": "DM_MOD_COMPLISTTAIL_CLIP", "kind": "toggle", "label": "Throttle UI clipping", "note": "Masked UI lists (RectMask2D) re-cull all their children every frame. This does it every other frame, and every frame while masks are added or removed, so an item can enter a list's view one frame late.", "default": "0"},
+    {"env": "DM_MOD_COMPLISTTAIL_TEXTSCALE", "kind": "toggle", "label": "Throttle text scale checks", "note": "Every text label reads its world scale each frame to keep its edges sharp. This checks each label every fourth frame, so a label that is scaling can look slightly soft for up to three frames.", "default": "0"}
   ],
   "game": "Library of Ruina 1.0.3",
   "gates": [
     "mask_loop",
-    "mouse_present"
+    "mouse_present",
+    "clip_cull",
+    "text_scale"
   ],
   "host": "host.c",
   "exefs": "exefs",
@@ -38,6 +42,18 @@
         "offset": "0x16f0254",
         "word": "f9415101",
         "reason": "LOR_InputModule.Process, after ldr x9 of the BaseInput.mousePresent virtual and before its blr: the host may swap x9 for a filter that returns false while the touchscreen pointer is idle, which skips ProcessMouseEvent"
+      },
+      {
+        "gate": "clip_cull",
+        "offset": "0x24d2e7c",
+        "word": "710006df",
+        "reason": "ClipperRegistry.Cull, the cmp w22, #1 right after w22 = the clippers' count: x19 = the registry; the host writes w22 = 0 on a throttled frame, which ends the function before its loop"
+      },
+      {
+        "gate": "text_scale",
+        "offset": "0x2c442f4",
+        "word": "aa0003f3",
+        "reason": "TextMeshProUGUI.InternalUpdate, the mov x19, x0 between the load of m_havePropertiesChanged into w8 and its cbnz: x0 = the label; the host writes w8 = 1 on a throttled frame, which skips the lossyScale check"
       }
     ]
   }

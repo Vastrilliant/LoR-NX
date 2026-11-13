@@ -10,6 +10,8 @@ int dm_touchscreen_mode(void);
 #define MASK_SLOTS 128
 #define MASK_INTERVAL 2
 #define POINTER_REFRESH 6
+#define CLIP_INTERVAL 2
+#define TEXT_SCALE_INTERVAL 4
 
 static uint8_t *main_base(void) {
     static uint8_t *base;
@@ -38,6 +40,16 @@ static int pointer_enabled(void) {
     return switch_on("DM_MOD_COMPLISTTAIL", &master) && switch_on("DM_MOD_COMPLISTTAIL_POINTER", &sub);
 }
 
+static int clip_enabled(void) {
+    static int master = -1, sub = -1;
+    return switch_on("DM_MOD_COMPLISTTAIL", &master) && switch_on("DM_MOD_COMPLISTTAIL_CLIP", &sub);
+}
+
+static int text_scale_enabled(void) {
+    static int master = -1, sub = -1;
+    return switch_on("DM_MOD_COMPLISTTAIL", &master) && switch_on("DM_MOD_COMPLISTTAIL_TEXTSCALE", &sub);
+}
+
 typedef struct { uint64_t self; uint32_t count; } mask_slot_t;
 static mask_slot_t s_mask[MASK_SLOTS];
 
@@ -54,6 +66,32 @@ static void on_mask_loop(uint64_t *r, int p) {
     r[20] = 0x7fffffffu;
     static int logged;
     if (!logged++) LOG("[mod component-list-tail] sprite mask sync throttled to every %d frames", MASK_INTERVAL);
+}
+
+static void on_clip_cull(uint64_t *r, int p) {
+    static uint32_t last, tick;
+    (void)p;
+    if (!clip_enabled()) return;
+    uint32_t n = (uint32_t)r[22];
+    if (n != last) {
+        last = n;
+        tick = 0;
+        return;
+    }
+    if (++tick % CLIP_INTERVAL == 0) return;
+    r[22] = 0;
+    static int logged;
+    if (!logged++) LOG("[mod component-list-tail] RectMask2D clipping throttled to every %d frames", CLIP_INTERVAL);
+}
+
+static void on_text_scale(uint64_t *r, int p) {
+    (void)p;
+    if (!text_scale_enabled() || !r[0]) return;
+    uint32_t h = (uint32_t)(((r[0] >> 4) * 0x9E3779B97F4A7C15ull) >> 32);
+    if ((h + (uint32_t)dm_nvn_frame_count()) % TEXT_SCALE_INTERVAL == 0) return;
+    r[8] = 1;
+    static int logged;
+    if (!logged++) LOG("[mod component-list-tail] text scale check throttled to every %d frames per label", TEXT_SCALE_INTERVAL);
 }
 
 static int (*s_frame_count)(void);
@@ -103,4 +141,6 @@ static void on_mouse_present(uint64_t *r, int p) {
 __attribute__((constructor)) static void mod_component_list_tail_attach(void) {
     gate_obs_set(MODGATE_COMPONENT_LIST_TAIL_MASK_LOOP, on_mask_loop);
     gate_obs_set(MODGATE_COMPONENT_LIST_TAIL_MOUSE_PRESENT, on_mouse_present);
+    gate_obs_set(MODGATE_COMPONENT_LIST_TAIL_CLIP_CULL, on_clip_cull);
+    gate_obs_set(MODGATE_COMPONENT_LIST_TAIL_TEXT_SCALE, on_text_scale);
 }
