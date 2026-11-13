@@ -527,9 +527,21 @@ def vs_discard(src):
     if not m: raise ValueError('vertex shader has no main0 entry for rasterizer discard')
     return '\nvertex void main0_discard(' + m.group(1) + ')\n{' + src[m.end():].replace('return out;', 'return;')
 
+def const_scalar(expr, body):
+    """The value of a float literal, or of a variable that the straight-line body sets once to a float literal (float _12 = 0.0;); None for anything else"""
+    num = r'-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?f?'
+    if expr is None: return None
+    if not re.fullmatch(num, expr):
+        if not re.fullmatch(r'_\w+', expr): return None
+        d = re.findall(r'\bfloat\s+%s\s*=\s*(%s)\s*;' % (re.escape(expr), num), body)
+        if len(d) != 1 or len(re.findall(r'(?<![\w.])%s\s*=(?!=)' % re.escape(expr), body)) != 1: return None
+        expr = d[0]
+    return float(expr.rstrip('f'))
+
 def raster_facts(stage, src):
     """Static facts needed for the runtime proof that the load can be skipped (full-coverage first draw) (nvn_mtl.m first_draw_covers):
         Vertex: whether position x / y / z are taken unchanged from the .x / .y / .z of one and the same vertex attribute (w is the constant 1 or the same attribute's .w), with no branches and no clip distances in the main function - if so, pos_attr = attribute slot;
+        when only z is not from the attribute but a constant in [0, 1] (a full-screen triangle written as float4(v.xy, 0, 1)), cov_attr / cov_z / cov_w say so for the load elision alone (pos_attr stays -1: the merge proofs do not use it); a failed proof carries pos_why (1 control flow or clip distance, 2 x, 3 y, 4 z, 5 w);
         Fragment: whether it may discard (discard_fragment), whether it writes sample_mask, and which color indices it writes. Anything unrecognized is treated as "unprovable" (pos_attr = -1 / discard = 1)"""
     if stage == 'ps':
         out = re.search(r'struct main0_out\s*\{(.*?)\};', src, re.S)
@@ -537,7 +549,7 @@ def raster_facts(stage, src):
                 'colors': sorted({int(x) for x in re.findall(r'\[\[color\((\d+)\)\]\]', out.group(1) if out else '')})}
     if stage != 'vs': return {}
     body = re.search(r'\bvertex\s+\w+\s+\w+\s*\(.*?\)\s*\{(.*)\}\s*$', src, re.S)   # the main function is the last function in the file
-    if not body or re.search(r'\b(if|for|while|switch|do)\b|clip_distance|ClipDistance', body.group(1)): return {'pos_attr': -1}
+    if not body or re.search(r'\b(if|for|while|switch|do)\b|clip_distance|ClipDistance', body.group(1)): return {'pos_attr': -1, 'pos_why': 1}
     b = body.group(1)
     attr = {m.group(2): int(m.group(3)) for m in re.finditer(r'(\w+)\s+(\w+)\s*\[\[attribute\((\d+)\)\]\]', src)}
     var = {m.group(1): (m.group(2), m.group(3)) for m in re.finditer(r'float\s+(_\w+)\s*=\s*in\.(\w+)\.([xyzw]);', b)}
@@ -545,10 +557,15 @@ def raster_facts(stage, src):
     for m in re.finditer(r'out\.gl_Position\.([xyzw])\s*=\s*([^;]+);', b): last[m.group(1)] = m.group(2).strip()
     src_of = {c: var.get(v) for c, v in last.items()}
     m0 = src_of.get('x')
-    if not m0 or m0[0] not in attr or any(src_of.get(c) != (m0[0], c) for c in 'xyz'): return {'pos_attr': -1}
+    if not m0 or m0[0] not in attr or m0[1] != 'x': return {'pos_attr': -1, 'pos_why': 2}
+    if src_of.get('y') != (m0[0], 'y'): return {'pos_attr': -1, 'pos_why': 3}
     if last.get('w') == '1.0': w = 'one'
     elif src_of.get('w') == (m0[0], 'w'): w = 'attr'
-    else: return {'pos_attr': -1}
+    else: return {'pos_attr': -1, 'pos_why': 5}
+    if src_of.get('z') != (m0[0], 'z'):
+        zc = const_scalar(last.get('z'), b)
+        if zc is None or not 0.0 <= zc <= 1.0: return {'pos_attr': -1, 'pos_why': 4}
+        return {'pos_attr': -1, 'cov_attr': attr[m0[0]], 'cov_z': zc, 'cov_w': w}
     # uv pass-through (used for the "this-pixel addressing" proof in merge B step 2): the .x / .y of interpolated output locn K are taken unchanged from the .x / .y of vertex attribute A → uv_from_attr[K] = A
     ost = re.search(r'struct main0_out\s*\{(.*?)\};', src, re.S)
     locn = {m.group(1): int(m.group(2)) for m in re.finditer(r'(m_\d+) \[\[user\(locn(\d+)\)\]\]', ost.group(1) if ost else '')}

@@ -511,6 +511,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Check:** not run (needs the game on a device). In a `DM_NVN_PASSDUMP` of a High frame the `T src=` count should fall from nine to the number of copies a draw samples, each skipped one shows `resolve copy skipped`, and the scene composite should be unchanged.
 - **Found on:** [Library of Ruina](../../dm/games/0100E7A019246000/README.md) (the user's fork, iPhone A15, docked, High texture quality).
 
+### Full-screen triangles with a constant z were not proven to cover their target
+
+- **Symptom:** `DM_NVN_TBDR=1` with a pass dump (`DM_NVN_PASSDUMP`) shows `Q <pass> c0 load cannot be skipped why=22` on every Unity post-processing pass (bloom prefilter, pyramid, upsample and uber passes), each of which draws one triangle over its whole target with blending off; the passes load their destination in full (`loads 1` in `[gpuprof]`).
+- **Cause:** the coverage proof (`first_draw_covers`) needs the vertex position taken as-is from one attribute, z included. Unity's blit vertex shader writes `float4(v.xy, 0, 1)`, so z is a constant, `raster_facts` gave `pos_attr = -1`, and the proof stopped at reason 22. Every other condition held (no discard, no blend, full write mask, a full-screen triangle in the vertex buffer).
+- **Fix:** `raster_facts` (`dmsh_build.py`) records `cov_attr`, `cov_z` and `cov_w` when x and y come from one attribute and z is a literal (or a variable set once to a literal) in [0, 1]. `first_draw_covers` takes that attribute for the load elision and sets z to the constant; `pos_attr` stays -1, so the merge proofs (`uv_proof`, `fz_p2_draw`) are unchanged. A proof that fails now carries `pos_why` (1 control flow or clip distance, 2 x, 3 y, 4 z, 5 w), printed on the `Q ... diag` line with `cov_attr1` (attribute + 1, 0 = none). The chain version changed with it, so the shader libraries must be rebuilt.
+- **Check:** not run (needs the game on a device). With `DM_NVN_LOADPROBE=1` the skipped loads are cleared to a sentinel and must leave no sentinel pixel; in a `[gpuprof]` frame the post-processing passes should show `loads 0`.
+- **Found on:** [Library of Ruina](../../dm/games/0100E7A019246000/README.md) (the user's fork, iPhone A15, RestoreFX bloom).
+
 ### Combined depth-stencil formats stay paired in passes and pipeline keys
 
 - **Symptom:** Metal aborts at pipeline creation: `depthAttachmentPixelFormat (MTLPixelFormatInvalid) and stencilAttachmentPixelFormat (MTLPixelFormatDepth32Float_Stencil8) must match`.

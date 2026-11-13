@@ -7580,7 +7580,7 @@ static void sd_finish(void) {
 }
 // Continue scanning in real replay order: current list -> callers at each level (return stack from the top down) -> remaining handles of this submit; the render pass necessarily ends when the submit ends (rp_flush before commit)
 // Coverage proof (holds only if all are satisfied; anything unrecognized is treated as not holding):
-//   Shader: the vertex position xyz is taken as-is from one vertex attribute, w is 1 or the same attribute's .w (dmsh_build raster_facts); the fragment does not discard, does not write sample_mask, and writes this color index
+//   Shader: the vertex position xyz is taken as-is from one vertex attribute (or xy from it and z a constant), w is 1 or the same attribute's .w (dmsh_build raster_facts); the fragment does not discard, does not write sample_mask, and writes this color index
 //   State: this attachment has no blending, a full write mask, no alpha-to-coverage, fill mode, no depth test (or ALWAYS), no stencil test, single sample, not 3D
 //   Vertices: non-indexed or 16 / 32-bit indexed draws, with indices and positions both read from CPU-visible pool memory; the scissor / viewport / geometry / winding / depth clipping decisions are in nvn_cover.h (pure functions, with unit tests)
 // Read out attribute a of all vertices of this draw (non-indexed or 16 / 32-bit indexed; vertex number = first + k or index value + base_vertex), with missing components filled with 0 / 1 per the fetch rules.
@@ -7611,8 +7611,8 @@ static void fd_diag(int i) {
     int n = dw ? dw->count : di->count, prim = dw ? dw->prim : di->prim;
     __unsafe_unretained NvProg *pr = S.prog ? prog_get(S.prog) : nil; if (!pr) return;
     NvShader *vs = pr->sh[0], *fs = pr->sh[1]; if (!vs || !fs) return;
-    PD("Q %llu c%d diag prim=%d n=%d pos_attr=%d pos_w1=%d may_discard=%d atest=%d lop=%d smask=%d cmask=%#x known=%d blend=%d chmask=%#x a2c=%d vp=%g,%g,%g,%g has_vp=%d sc=%d,%d,%d,%d has_sc=%d", g_stat_pass + 1, i, prim, n,
-       vs->rf.pos_attr, vs->rf.pos_w1, fs->rf.may_discard, atest_on(), lop_on(), fs->rf.writes_smask, (unsigned)fs->rf.color_mask, fs->rf.color_known, (S.color.blend_en >> i) & 1, (unsigned)((S.chmask.mask >> (4 * i)) & 0xf), S.ms.a2c,
+    PD("Q %llu c%d diag prim=%d n=%d pos_attr=%d cov_attr1=%d pos_why=%d pos_w1=%d may_discard=%d atest=%d lop=%d smask=%d cmask=%#x known=%d blend=%d chmask=%#x a2c=%d vp=%g,%g,%g,%g has_vp=%d sc=%d,%d,%d,%d has_sc=%d", g_stat_pass + 1, i, prim, n,
+       vs->rf.pos_attr, vs->rf.cov_attr1, vs->rf.pos_why, vs->rf.pos_w1, fs->rf.may_discard, atest_on(), lop_on(), fs->rf.writes_smask, (unsigned)fs->rf.color_mask, fs->rf.color_known, (S.color.blend_en >> i) & 1, (unsigned)((S.chmask.mask >> (4 * i)) & 0xf), S.ms.a2c,
        S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3], S.has_vp, R.sc.x, R.sc.y, R.sc.w, R.sc.h, R.has_sc);
     float P[64][4];
     for (int a = 0; a < S.nattr && a < 4 && n <= 8; a++) {
@@ -7634,7 +7634,8 @@ static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level) {
     __unsafe_unretained NvProg *pr = S.prog ? prog_get(S.prog) : nil; if (!pr) return g_fd_why = 1, 0;
     NvShader *vs = pr->sh[0], *fs = pr->sh[1];
     if (!vs || !fs) return g_fd_why = 21, 0;
-    if (vs->rf.pos_attr < 0) return g_fd_why = 22, 0;
+    int pa = vs->rf.pos_attr >= 0 ? vs->rf.pos_attr : (int)vs->rf.cov_attr1 - 1;
+    if (pa < 0) return g_fd_why = 22, 0;
     if (fs->rf.may_discard) return g_fd_why = 23, 0;
     if (atest_on()) return g_fd_why = 24, 0;
     if (lop_on()) return g_fd_why = 25, 0;
@@ -7644,8 +7645,9 @@ static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level) {
     if ((S.color.blend_en >> i & 1) || ((S.chmask.mask >> (4 * i)) & 0xf) != 0xf || S.ms.a2c || S.poly.mode != NVN_POLYGON_MODE_FILL) return g_fd_why = 4, 0;
     if (R.rt.depth && ((S.ds.dt && S.ds.df != NVN_DEPTH_FUNC_ALWAYS) || S.ds.st)) return g_fd_why = 5, 0;
     if (n < 3 || n > 64) return g_fd_why = 6, 0;
-    float P[64][4]; int why = attr_read(vs->rf.pos_attr, dw, di, P);
+    float P[64][4]; int why = attr_read(pa, dw, di, P);
     if (why) return g_fd_why = why, 0;
+    if (vs->rf.pos_attr < 0) for (int k = 0; k < n; k++) P[k][2] = vs->rf.cov_z;
     if (vs->rf.pos_w1) for (int k = 0; k < n; k++) P[k][3] = 1.0f;   // Position w is the constant 1 (the attribute's .w is not taken)
     int sc[4] = {R.sc.x, R.sc.y, R.sc.w, R.sc.h}; float vp[4] = {S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3]};
     g_fd_why = 11;

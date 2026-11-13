@@ -135,9 +135,11 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             o->has_vin = used != 0;
         }
         NSDictionary *ra = j[@"raster"];
-        o->pos_attr = -1; o->may_discard = 1; o->writes_smask = 1;
+        o->pos_attr = -1; o->cov_attr1 = 0; o->may_discard = 1; o->writes_smask = 1;
         if ([ra isKindOfClass:[NSDictionary class]]) {
             if (ra[@"pos_attr"]) { int pa = [ra[@"pos_attr"] intValue]; o->pos_attr = (int8_t)(pa >= 0 && pa < 16 ? pa : -1); o->pos_w1 = [ra[@"pos_w"] isEqual:@"one"]; }
+            if (o->pos_attr < 0 && ra[@"cov_attr"] && ra[@"cov_z"]) { int ca = [ra[@"cov_attr"] intValue]; if (ca >= 0 && ca < 16) { o->cov_attr1 = (uint8_t)(ca + 1); o->cov_z = [ra[@"cov_z"] floatValue]; o->pos_w1 = [ra[@"cov_w"] isEqual:@"one"]; } }
+            if (ra[@"pos_why"]) o->pos_why = (uint8_t)[ra[@"pos_why"] intValue];
             if (ra[@"discard"]) o->may_discard = [ra[@"discard"] intValue] != 0;
             if (ra[@"sample_mask"]) o->writes_smask = [ra[@"sample_mask"] intValue] != 0;
             for (NSNumber *c in ra[@"colors"]) if (c.intValue >= 0 && c.intValue < 8) o->color_mask |= (uint8_t)(1u << c.intValue);
