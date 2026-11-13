@@ -47,10 +47,17 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define K_GRAPHIC_SET_RAYCAST 0x24DE170u
 #define K_GRAPHIC_GET_MATERIAL 0x24DFAC0u
 #define K_GRAPHIC_SET_MATERIAL 0x24DFB80u
-#define K_RECT_SET_ANCHORMIN 0x19BA350u
-#define K_RECT_SET_ANCHORMAX 0x19BA4F0u
-#define K_RECT_SET_OFFSETMIN 0x19BADB0u
-#define K_RECT_SET_OFFSETMAX 0x19BB150u
+#define K_IMAGE_GET_SPRITE 0x24E55C0u
+#define K_IMAGE_SET_TYPE 0x24D5A60u
+#define K_IMAGE_SET_FILLMETHOD 0x24E5AF0u
+#define K_IMAGE_SET_FILLORIGIN 0x24E5CF0u
+#define K_IMAGE_SET_FILLAMOUNT 0x24E5BA0u
+#define K_TRANSFORM_GET_PARENT 0x19BC440u
+#define K_TRANSFORM_GET_SIBLINGINDEX 0x19BF870u
+#define K_TRANSFORM_SET_SIBLINGINDEX 0x19BF7A0u
+#define IMAGE_TYPE_FILLED 3
+#define FILL_VERTICAL 1
+#define FILL_ORIGIN_BOTTOM 0
 #define K_INPUT_GET_MOUSEBUTTON 0x3530660u
 #define K_INPUT_GET_MOUSEPOSITION 0x3530A20u
 #define K_TIME_UNSCALED_DT 0x19B91C0u
@@ -360,7 +367,6 @@ static int self_only(void *card) {
 static struct {
     void *card;
     void *img;
-    void *rect;
     float t;
     int pad;
     int defer;
@@ -371,36 +377,32 @@ static void *transform_of(void *obj) { return FN(K_COMPONENT_GET_TRANSFORM, void
 
 static void overlay_make(void *card) {
     void *art = field(card, F_CARD_ARTWORK);
-    void *vibe = field(card, F_CARD_VIBERECT);
-    if (!art || !vibe) return;
-    void *parent = transform_of(vibe);
+    if (!art || !FN(K_IMAGE_GET_SPRITE, void *, void *, const void *)(art, NULL)) return;
+    void *art_tf = transform_of(art);
+    void *parent = art_tf ? FN(K_TRANSFORM_GET_PARENT, void *, void *, const void *)(art_tf, NULL) : NULL;
     if (!parent) return;
+    int index = FN(K_TRANSFORM_GET_SIBLINGINDEX, int, void *, const void *)(art_tf, NULL);
     void *img = FN(K_OBJECT_INSTANTIATE_PARENT, void *, void *, void *, const void *)(art, parent, NULL);
     if (!img) return;
     void *dodges = field(card, F_CARD_DODGES);
     void *dodge = dodges && *(const int *)((uintptr_t)dodges + F_ARRAY_LENGTH) > 0 ? *(void *const *)((uintptr_t)dodges + F_ARRAY_DATA) : NULL;
     void *mat = dodge ? FN(K_GRAPHIC_GET_MATERIAL, void *, void *, const void *)(dodge, NULL) : NULL;
     rgba c = {0.6f, 0.6f, 0.6f, mat ? 1.0f : 0.45f};
-    FN(K_IMAGE_SET_SPRITE, void, void *, void *, const void *)(img, NULL, NULL);
+    FN(K_IMAGE_SET_TYPE, void, void *, int, const void *)(img, IMAGE_TYPE_FILLED, NULL);
+    FN(K_IMAGE_SET_FILLMETHOD, void, void *, int, const void *)(img, FILL_VERTICAL, NULL);
+    FN(K_IMAGE_SET_FILLORIGIN, void, void *, int, const void *)(img, FILL_ORIGIN_BOTTOM, NULL);
+    FN(K_IMAGE_SET_FILLAMOUNT, void, void *, float, const void *)(img, 0.0f, NULL);
     FN(K_GRAPHIC_SET_RAYCAST, void, void *, int, const void *)(img, 0, NULL);
     FN(K_GRAPHIC_SET_COLOR, void, void *, rgba, const void *)(img, c, NULL);
     if (mat) FN(K_GRAPHIC_SET_MATERIAL, void, void *, void *, const void *)(img, mat, NULL);
-    void *rect = transform_of(img);
-    if (!rect) return;
-    v2 zero = {0, 0};
-    v2 one = {1, 0};
-    FN(K_RECT_SET_ANCHORMIN, void, void *, v2, const void *)(rect, zero, NULL);
-    FN(K_RECT_SET_ANCHORMAX, void, void *, v2, const void *)(rect, one, NULL);
-    FN(K_RECT_SET_OFFSETMIN, void, void *, v2, const void *)(rect, zero, NULL);
-    FN(K_RECT_SET_OFFSETMAX, void, void *, v2, const void *)(rect, zero, NULL);
+    void *img_tf = transform_of(img);
+    if (img_tf) FN(K_TRANSFORM_SET_SIBLINGINDEX, void, void *, int, const void *)(img_tf, index + 1, NULL);
     s_hold.img = img;
-    s_hold.rect = rect;
 }
 
 static void overlay_fill(float progress) {
-    if (!s_hold.rect) return;
-    v2 top = {1, progress > 1.0f ? 1.0f : progress};
-    FN(K_RECT_SET_ANCHORMAX, void, void *, v2, const void *)(s_hold.rect, top, NULL);
+    if (!s_hold.img) return;
+    FN(K_IMAGE_SET_FILLAMOUNT, void, void *, float, const void *)(s_hold.img, progress > 1.0f ? 1.0f : progress, NULL);
 }
 
 static void hold_end(void *hand) {
