@@ -413,14 +413,15 @@ def site_obs(off, oid, word):
     assert ins.mnemonic not in ('adr', 'adrp', 'b', 'bl', 'br', 'blr', 'ret', 'cbz', 'cbnz', 'tbz', 'tbnz') and not ins.mnemonic.startswith('b.') \
         and not (ins.mnemonic.startswith('ldr') and '[' not in ins.op_str) and not has18(ins), f'observation gate original instruction cannot be relocated {off:#x} {ins.mnemonic} {ins.op_str}'
     start = here()
-    emit(STP_PRE(29, 30, 31, -16))
-    emit_gate_call()
-    emit(BLR(30))
-    ret = here()
-    emit(LDP_POST(29, 30, 31, 16))
+    for one in (oid if isinstance(oid, (list, tuple)) else [oid]):
+        emit(STP_PRE(29, 30, 31, -16))
+        emit_gate_call()
+        emit(BLR(30))
+        ret = here()
+        emit(LDP_POST(29, 30, 31, 16))
+        gates.append((ret, 'obs', one, off))
     emit(word)
     emit(B(here(), off + 4))
-    gates.append((ret, 'obs', oid, off))
     return start
 
 # ---- Exclusive windows ----
@@ -1216,13 +1217,18 @@ for a in sorted(kinds):
     put_branch(a, st)
 
 obs = list(PATCHES['OBS'].get(BUILD_ID, []))
+obs_sites = {}
 for off, oid, ow, why in obs:
+    site = obs_sites.setdefault(off, [ow, []])
+    assert site[0] == ow, f'observation gates at {off:#x} disagree on the original instruction: {site[0]} {ow}'
+    site[1].append(oid)
+for off, (ow, oids) in obs_sites.items():
     w = struct.unpack_from('<I', IMG, off)[0]
     assert f'{w:08x}' == ow, f'observation gate original instruction mismatch {off:#x}: {w:08x}'
     # Any instruction site_obs can relocate: the gate frame saves x0–x28 and the flags and restores them (dm/host/entry.S), so the code around it sees its registers as they were
     # unless the callback writes one
     assert off < TEXT_END and off not in kinds and not any(lo <= off < hi for wseg in windows for lo, hi in [(wseg[0].address, wseg[-1].address + 4)]), f'observation gate conflicts with a rewrite site {off:#x}'
-    use_area(off); put_branch(off, site_obs(off, oid, w)); stat('obs')
+    use_area(off); put_branch(off, site_obs(off, oids, w)); stat('obs')
 
 # ---- Switchable patches (mods/<id>/exefs: Atmosphere exefs patches, .ips / .pchtxt, that the player turns on in the launcher's Mods section) ----
 # Each word a mod patches becomes a branch to a stub (dm/tools/nso_switch.py) that reads the mod's byte in the state page (+0x100 + the mod's index; the host writes 1 there at the start when the mod's env switch is 1,
