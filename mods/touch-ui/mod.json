@@ -1,7 +1,7 @@
 {
   "id": "touch-ui",
   "title": "Touch UI",
-  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, and runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once)",
+  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot, and while a librarian's hand is shown it exits the hand",
   "launcher": {
     "env": "DM_MOD_TOUCHUI",
     "category": "Quality of Life",
@@ -130,6 +130,20 @@
         "offset": "0x2971a70",
         "word": "d10383ff",
         "reason": "ScrollRect.LateUpdate entry: the slot shifts of a recycling list zero the ScrollRect's velocity (SetNormalizedPosition), so its glide is carried on from the last frame's"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 14,
+        "offset": "0x1fdf230",
+        "word": "a9bd7bfd",
+        "reason": "BattleUnitCardsInHandUI.Update entry: x0 = the hand; its _isActiveState (+0x40) is the hand being shown, and Update leaves it on GetMouseButtonDown(1); a double tap while it is shown is sent as that right button"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 15,
+        "offset": "0x233f730",
+        "word": "a9bd7bfd",
+        "reason": "SpeedDiceUI.OnSubmit entry (OnPointerClick and OnPointerDown branch here): a click on a speed dice; a second tap on the same spot right after it is sent as the right button, which makes the dice empty its slot (EmptySpeedDiceSlot)"
       }
     ]
   }

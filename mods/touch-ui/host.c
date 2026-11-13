@@ -388,6 +388,74 @@ static uint64_t game_frame(void) {
     return dm_nvn_frame_count();
 }
 
+#define F_HAND_ACTIVE 0x40u
+#define HAND_LIVE_MS 250u
+#define DOUBLE_GAP_MS 450u
+#define DOUBLE_TAP_MS 300u
+#define DOUBLE_DICE_MS 500u
+#define DOUBLE_RADIUS 32.0f
+
+static void *s_hand;
+static uint64_t s_hand_ms;
+static uint64_t s_dice_ms;
+
+static struct {
+    int valid, pressed;
+    uint64_t down_ms, up_ms;
+    float x, y;
+} s_tap;
+static int s_as_right, s_as_right_end;
+
+static int hand_active(void) {
+    if (!s_hand || now_ms() - s_hand_ms > HAND_LIVE_MS) return 0;
+    return *(volatile uint8_t *)((uintptr_t)s_hand + F_HAND_ACTIVE) != 0;
+}
+
+static void track_double(const dm_mouse_frame_t *f) {
+    if (s_as_right_end) s_as_right = s_as_right_end = 0;
+    uint64_t t = now_ms();
+    float x = f->nx * 1280.0f, y = f->ny * 720.0f;
+    if (f->down & DM_MOUSE_LEFT) {
+        int dice = t - s_dice_ms <= DOUBLE_DICE_MS;
+        int hand = hand_active();
+        int dbl = s_tap.valid && t - s_tap.up_ms <= DOUBLE_GAP_MS && hypotf(x - s_tap.x, y - s_tap.y) <= DOUBLE_RADIUS && (dice || hand);
+        s_tap.valid = 0;
+        s_tap.pressed = !dbl;
+        if (dbl) {
+            s_as_right = 1;
+            static int n_log;
+            if (n_log++ < 40) LOG("[mod touch-ui] double tap at (%.0f,%.0f) on %s: sent as the right button", x, y, dice ? "a speed dice" : "the shown hand");
+        } else {
+            s_tap.down_ms = t;
+            s_tap.x = x;
+            s_tap.y = y;
+        }
+    }
+    if (f->up & DM_MOUSE_LEFT) {
+        if (s_as_right) {
+            s_as_right_end = 1;
+        } else if (s_tap.pressed) {
+            s_tap.pressed = 0;
+            if (t - s_tap.down_ms <= DOUBLE_TAP_MS) {
+                s_tap.valid = 1;
+                s_tap.up_ms = t;
+            }
+        }
+    }
+}
+
+static uint32_t left_as_right(uint32_t mask) {
+    return (mask & ~(uint32_t)DM_MOUSE_LEFT) | ((mask & DM_MOUSE_LEFT) ? DM_MOUSE_RIGHT : 0u);
+}
+
+static dm_mouse_frame_t double_as_right(dm_mouse_frame_t f) {
+    if (!s_as_right) return f;
+    f.held = left_as_right(f.held);
+    f.down = left_as_right(f.down);
+    f.up = left_as_right(f.up);
+    return f;
+}
+
 static dm_mouse_frame_t frame_now(void) {
     static uint64_t pushed = ~0ull;
     uint64_t frame = game_frame();
@@ -405,8 +473,9 @@ static dm_mouse_frame_t frame_now(void) {
             LOG("[mod touch-ui] frame %llu buttons held %#x down %#x up %#x at (%.0f,%.0f)", (unsigned long long)frame, f.held, f.down, f.up, f.nx * (float)(w - 1), (1.0f - f.ny) * (float)(h - 1));
         }
         last_held = f.held;
+        track_double(&f);
     }
-    return f;
+    return double_as_right(f);
 }
 
 static uint32_t button_mask(int button) {
@@ -615,9 +684,22 @@ static void on_cam_late(uint64_t *r, int p) {
     dm_mod_gate_run(r, p, cam_zoom_run);
 }
 
+static void on_hand_update(uint64_t *r) {
+    if (!mod_enabled() || !dm_touchscreen_mode()) return;
+    s_hand = (void *)(uintptr_t)r[0];
+    s_hand_ms = now_ms();
+}
+
+static void on_dice_submit(void) {
+    if (!mod_enabled() || !dm_touchscreen_mode()) return;
+    s_dice_ms = now_ms();
+}
+
 static void on_icall_resolved(uint64_t *r, int p) {
     if (p == 1) { on_page_press(r, p); return; }
     if (p == 2) { on_cam_late(r, p); return; }
+    if (p == 14) { on_hand_update(r); return; }
+    if (p == 15) { on_dice_submit(); return; }
     if (p > 2) { on_scroll_ui(r, p - 2); return; }
     if (!mod_enabled()) return;
     const char *name = (const char *)(uintptr_t)r[19];
