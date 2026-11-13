@@ -35,7 +35,7 @@ static UILabel *front_ios_fps_label(void);
     if ((self = [super initWithFrame:f])) {
         CAMetalLayer *l = (CAMetalLayer *)self.layer;
         l.device = MTLCreateSystemDefaultDevice(); l.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        l.contentsScale = UIScreen.mainScreen.nativeScale; l.framebufferOnly = NO; l.opaque = YES;
+        l.contentsScale = UIScreen.mainScreen.nativeScale; l.framebufferOnly = YES; l.opaque = YES;
         self.backgroundColor = UIColor.blackColor;
     }
     return self;
