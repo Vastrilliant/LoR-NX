@@ -696,7 +696,13 @@ static void on_dice_submit(void) {
 }
 
 #define K_UI_CONTROLLER_GET_INSTANCE 0x16F8D10u
-#define K_UI_CONTROLLER_GET_PANEL 0x16FB700u
+#define F_CONTROLLER_PANELS 0x50u
+#define F_CONTROLLER_PREFABS 0x60u
+#define F_CONTROLLER_LIVE_PANELS 0x70u
+#define F_PANEL_TYPE 0x18u
+#define ARRAY_LENGTH 0x18u
+#define ARRAY_DATA 0x20u
+#define MAX_PANELS 64
 #define K_INSTANTIATE_PARENT 0x19B4F00u
 #define K_COMPONENT_GET_GAMEOBJECT 0x19AE220u
 #define K_GAMEOBJECT_SET_ACTIVE 0x19AFD70u
@@ -752,17 +758,37 @@ static void leave_set_active(void *component, int on) {
     if (go) FN(K_GAMEOBJECT_SET_ACTIVE, void, void *, int, void *)(go, on, NULL);
 }
 
+static void *panel_in(void *controller, uintptr_t field, int type) {
+    uint8_t *array = ptr_at(controller, field);
+    if (!array) return NULL;
+    int64_t n = *(int64_t *)(array + ARRAY_LENGTH);
+    if (n <= 0 || n > MAX_PANELS) return NULL;
+    void **items = (void **)(array + ARRAY_DATA);
+    for (int64_t i = 0; i < n; i++)
+        if (items[i] && *(int *)((uintptr_t)items[i] + F_PANEL_TYPE) == type) return items[i];
+    return NULL;
+}
+
 static void leave_create_run(uint64_t *r, int p) {
     (void)r; (void)p;
     void *panel = s_leave_panel;
     void *controller = FN(K_UI_CONTROLLER_GET_INSTANCE, void *, void *)(NULL);
-    void *setting = controller ? FN(K_UI_CONTROLLER_GET_PANEL, void *, void *, int, void *)(controller, PANEL_TYPE_BATTLE_SETTING, NULL) : NULL;
+    void *setting = NULL;
+    const char *where = "none";
+    if (controller) {
+        setting = panel_in(controller, F_CONTROLLER_LIVE_PANELS, PANEL_TYPE_BATTLE_SETTING);
+        where = "live panels";
+        if (!setting) { setting = panel_in(controller, F_CONTROLLER_PANELS, PANEL_TYPE_BATTLE_SETTING); where = "panels"; }
+        if (!setting) { setting = panel_in(controller, F_CONTROLLER_PREFABS, PANEL_TYPE_BATTLE_SETTING); where = "prefabs"; }
+    }
     void *source = ptr_at(setting, F_BATTLE_SETTING_BACK);
     void *parent = tf_of(panel);
     if (!source || !parent) {
-        LOG("[mod touch-ui] leave button: no source (controller %p, preparation panel %p, back button %p), will retry", controller, setting, source);
+        s_leave_failed = 1;
+        LOG("[mod touch-ui] leave button: no source (controller %p, preparation panel %p, back button %p), left out", controller, setting, source);
         return;
     }
+    LOG("[mod touch-ui] leave button: preparation panel %p found in %s, back button %p", setting, where, source);
     R4 src_rect = FN(K_RECT_GET_RECT, R4, void *, void *)(tf_of(source), NULL);
     R4 parent_rect = FN(K_RECT_GET_RECT, R4, void *, void *)(parent, NULL);
     if (parent_rect.w <= 1.0f || parent_rect.h <= 1.0f) {
