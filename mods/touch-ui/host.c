@@ -695,7 +695,171 @@ static void on_dice_submit(void) {
     s_dice_ms = now_ms();
 }
 
+#define K_UI_CONTROLLER_GET_INSTANCE 0x16F8D10u
+#define K_UI_CONTROLLER_GET_PANEL 0x16FB700u
+#define K_INSTANTIATE_PARENT 0x19B4F00u
+#define K_COMPONENT_GET_GAMEOBJECT 0x19AE220u
+#define K_GAMEOBJECT_SET_ACTIVE 0x19AFD70u
+#define K_BEHAVIOUR_SET_ENABLED 0x19ADFE0u
+#define K_TRANSFORM_SET_AS_LAST_SIBLING 0x19BF750u
+#define K_RECT_GET_RECT 0x19BA1B0u
+#define K_RECT_SET_ANCHOR_MIN 0x19BA350u
+#define K_RECT_SET_ANCHOR_MAX 0x19BA4F0u
+#define K_RECT_SET_ANCHORED_POSITION 0x19BA690u
+#define K_RECT_SET_PIVOT 0x19BA9D0u
+#define K_RECT_SET_SIZE_DELTA 0x19BA830u
+#define K_INV_SET_PHASE_STATE 0x257C590u
+#define PANEL_TYPE_BATTLE_SETTING 10
+#define PHASE_STORY 0
+#define PHASE_DROP_BOOK_SELECT 1
+#define F_BATTLE_SETTING_BACK 0x98u
+#define F_INV_PHASE 0x98u
+#define F_GRAPHIC_OBJECT_SELECTABLE 0x38u
+#define F_SELECTABLE_TRIGGER 0x158u
+#define LEAVE_X_FRAC 0.5f
+#define LEAVE_Y_FRAC 0.076f
+#define LEAVE_PAD_X 1.3f
+#define LEAVE_PAD_Y 1.6f
+#define LEAVE_FALLBACK_W 220.0f
+#define LEAVE_FALLBACK_H 64.0f
+
+typedef struct { float x, y; } V2;
+typedef struct { float x, y, w, h; } R4;
+
+static void *s_leave;
+static void *s_leave_owner;
+static void *s_leave_panel;
+static int s_leave_failed;
+static int s_leave_shown;
+static int s_leave_want;
+static int s_leave_pressed;
+static float s_leave_half_w, s_leave_half_h;
+
+static int build_matches(void) {
+    static int ok = -1;
+    if (ok < 0) ok = strncmp(dm_main_build(), K_BUILD_ID, 32) == 0;
+    return ok;
+}
+
+static int within(void *tf, void *root) {
+    for (int depth = 0; tf && depth < MAX_DEPTH; depth++, tf = parent_of(tf))
+        if (tf == root) return 1;
+    return 0;
+}
+
+static void leave_set_active(void *component, int on) {
+    void *go = FN(K_COMPONENT_GET_GAMEOBJECT, void *, void *, void *)(component, NULL);
+    if (go) FN(K_GAMEOBJECT_SET_ACTIVE, void, void *, int, void *)(go, on, NULL);
+}
+
+static void leave_create_run(uint64_t *r, int p) {
+    (void)r; (void)p;
+    void *panel = s_leave_panel;
+    void *controller = FN(K_UI_CONTROLLER_GET_INSTANCE, void *, void *)(NULL);
+    void *setting = controller ? FN(K_UI_CONTROLLER_GET_PANEL, void *, void *, int, void *)(controller, PANEL_TYPE_BATTLE_SETTING, NULL) : NULL;
+    void *source = ptr_at(setting, F_BATTLE_SETTING_BACK);
+    void *parent = tf_of(panel);
+    if (!source || !parent) {
+        LOG("[mod touch-ui] leave button: no source (controller %p, preparation panel %p, back button %p), will retry", controller, setting, source);
+        return;
+    }
+    R4 src_rect = FN(K_RECT_GET_RECT, R4, void *, void *)(tf_of(source), NULL);
+    R4 parent_rect = FN(K_RECT_GET_RECT, R4, void *, void *)(parent, NULL);
+    if (parent_rect.w <= 1.0f || parent_rect.h <= 1.0f) {
+        LOG("[mod touch-ui] leave button: invitation panel rect %.1fx%.1f is unusable, will retry", parent_rect.w, parent_rect.h);
+        return;
+    }
+    void *clone = FN(K_INSTANTIATE_PARENT, void *, void *, void *, int, void *)(source, parent, 0, NULL);
+    if (!clone) {
+        s_leave_failed = 1;
+        LOG("[mod touch-ui] leave button: Instantiate returned null");
+        return;
+    }
+    void *clone_tf = tf_of(clone);
+    void *selectable = ptr_at(clone, F_GRAPHIC_OBJECT_SELECTABLE);
+    if (selectable && !within(tf_of(selectable), clone_tf)) {
+        s_leave_failed = 1;
+        leave_set_active(clone, 0);
+        LOG("[mod touch-ui] leave button: the clone's selectable %p is outside the clone, button left hidden", selectable);
+        return;
+    }
+    if (selectable) {
+        void *trigger = ptr_at(selectable, F_SELECTABLE_TRIGGER);
+        if (trigger) FN(K_BEHAVIOUR_SET_ENABLED, void, void *, int, void *)(trigger, 0, NULL);
+        FN(K_BEHAVIOUR_SET_ENABLED, void, void *, int, void *)(selectable, 0, NULL);
+    }
+    float w = src_rect.w > 1.0f && src_rect.w < parent_rect.w ? src_rect.w : LEAVE_FALLBACK_W;
+    float h = src_rect.h > 1.0f && src_rect.h < parent_rect.h ? src_rect.h : LEAVE_FALLBACK_H;
+    FN(K_RECT_SET_ANCHOR_MIN, void, void *, float, float, void *)(clone_tf, LEAVE_X_FRAC, 0.0f, NULL);
+    FN(K_RECT_SET_ANCHOR_MAX, void, void *, float, float, void *)(clone_tf, LEAVE_X_FRAC, 0.0f, NULL);
+    FN(K_RECT_SET_PIVOT, void, void *, float, float, void *)(clone_tf, 0.5f, 0.5f, NULL);
+    FN(K_RECT_SET_SIZE_DELTA, void, void *, float, float, void *)(clone_tf, w, h, NULL);
+    FN(K_RECT_SET_ANCHORED_POSITION, void, void *, float, float, void *)(clone_tf, 0.0f, LEAVE_Y_FRAC * parent_rect.h, NULL);
+    FN(K_TRANSFORM_SET_AS_LAST_SIBLING, void, void *, void *)(clone_tf, NULL);
+    leave_set_active(clone, 0);
+    s_leave = clone;
+    s_leave_owner = panel;
+    s_leave_shown = 0;
+    s_leave_half_w = w / parent_rect.w * 0.5f * LEAVE_PAD_X;
+    s_leave_half_h = h / parent_rect.h * 0.5f * LEAVE_PAD_Y;
+    LOG("[mod touch-ui] leave button %p built from the preparation panel's back button %p under %p: %.0fx%.0f in a %.0fx%.0f panel, selectable %p disabled", clone, source, parent, w, h, parent_rect.w, parent_rect.h, selectable);
+}
+
+static void leave_visible_run(uint64_t *r, int p) {
+    (void)r; (void)p;
+    leave_set_active(s_leave, s_leave_want);
+    s_leave_shown = s_leave_want;
+    static int n_log;
+    if (n_log++ < 20) LOG("[mod touch-ui] leave button %s", s_leave_want ? "shown over the bookshelf" : "hidden");
+}
+
+static void leave_exit_run(uint64_t *r, int p) {
+    (void)r; (void)p;
+    FN(K_INV_SET_PHASE_STATE, void, void *, int, int, void *)(s_leave_panel, PHASE_STORY, 0, NULL);
+    LOG("[mod touch-ui] leave button tapped: invitation panel %p leaves the bookshelf", s_leave_panel);
+}
+
+static int leave_hit(const dm_mouse_frame_t *f) {
+    float cy = 1.0f - LEAVE_Y_FRAC;
+    return fabsf(f->nx - LEAVE_X_FRAC) <= s_leave_half_w && fabsf(f->ny - cy) <= s_leave_half_h;
+}
+
+static void on_inv_update(uint64_t *r, int p) {
+    if (!mod_enabled() || !dm_touchscreen_mode() || !main_base() || !build_matches()) return;
+    void *panel = (void *)(uintptr_t)r[0];
+    if (!panel) return;
+    if (s_leave && s_leave_owner != panel) {
+        s_leave = NULL;
+        s_leave_owner = NULL;
+        s_leave_shown = 0;
+        s_leave_pressed = 0;
+        s_leave_failed = 0;
+    }
+    int bookshelf = *(volatile int *)((uintptr_t)panel + F_INV_PHASE) == PHASE_DROP_BOOK_SELECT;
+    s_leave_panel = panel;
+    if (!s_leave) {
+        if (!bookshelf || s_leave_failed) return;
+        dm_mod_gate_run(r, p, leave_create_run);
+        if (!s_leave) return;
+    }
+    if (bookshelf != s_leave_shown) {
+        s_leave_want = bookshelf;
+        dm_mod_gate_run(r, p, leave_visible_run);
+        s_leave_pressed = 0;
+    }
+    if (!bookshelf) return;
+    dm_mouse_frame_t f = frame_now();
+    int inside = leave_hit(&f);
+    if (f.down & DM_MOUSE_LEFT) s_leave_pressed = inside;
+    if (f.up & DM_MOUSE_LEFT) {
+        int tapped = s_leave_pressed && inside;
+        s_leave_pressed = 0;
+        if (tapped) dm_mod_gate_run(r, p, leave_exit_run);
+    }
+}
+
 static void on_icall_resolved(uint64_t *r, int p) {
+    if (p == 16) { on_inv_update(r, p); return; }
     if (p == 1) { on_page_press(r, p); return; }
     if (p == 2) { on_cam_late(r, p); return; }
     if (p == 14) { on_hand_update(r); return; }

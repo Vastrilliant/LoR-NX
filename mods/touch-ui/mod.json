@@ -1,7 +1,7 @@
 {
   "id": "touch-ui",
   "title": "Touch UI",
-  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot, and while a librarian's hand is shown it exits the hand",
+  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot, and while a librarian's hand is shown it exits the hand, and puts a Leave button, built from the preparation menu's own Leave button, at the bottom center of the reception bookshelf, which has no back button",
   "launcher": {
     "env": "DM_MOD_TOUCHUI",
     "category": "Quality of Life",
@@ -144,6 +144,13 @@
         "offset": "0x233f730",
         "word": "a9bd7bfd",
         "reason": "SpeedDiceUI.OnSubmit entry (OnPointerClick and OnPointerDown branch here): a click on a speed dice; a second tap on the same spot right after it is sent as the right button, which makes the dice empty its slot (EmptySpeedDiceSlot)"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 16,
+        "offset": "0x257ca00",
+        "word": "a9be7bfd",
+        "reason": "UIInvitationPanel.Update entry: x0 = the invitation panel; its phase (+0x98) is DropBookSelect while the bookshelf is open, which has no back button; the host builds a Leave button there from the preparation panel's back button and sends a tap on it as the bookshelf's exit (SetPhaseState(Story))"
       }
     ]
   }
