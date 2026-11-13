@@ -5,6 +5,7 @@
 //   swap_press   BattleDiceCardUI.OnPdSubmit entry + 4 (x0 = the pressed page, x1 = the event data): starts the Hold to On-Play hold on a left press of a page that qualifies; then Page Swapping (DM_MOD_ECPV_SWAP, Touchscreen Mode only): with a page selected, a left press on it deselects it the way the hand's right click does (SetToDefault, ReleaseSelectedCard, CloseUnitInformation, UnblockOtherUnitsDice), except on a page the hold is running on, where the deselect waits for the release and happens only if the hold did not complete; a left press on another page that GetClickableState would accept deselects the selected page and runs ShowDetail on the pressed one, so the game's own OnPdSubmit then selects it
 //   apply_pre    BattleUnitCardsInHandUI.ApplySelectedCard entry (x0 = the hand), Suppress On-Play deselect (DM_MOD_ECPV_KEEP): remembers the speed die the hand was opened from when the selected page is an On-Play page (range Instance)
 //   apply_post   SpeedDiceUI.OnClickSpeedDice after its BattleUnitInformationUI.ReleaseSelectedCard call: clicks the remembered die again, which reopens the hand the way the player's own click on that die does, after ApplySelectedCard has closed it
+//   info_alpha   BattleUnitInformationUI.Update right after its CanvasGroup.set_alpha call (x19 = the panel), Fade info panels (DM_MOD_ECPV_DIM): while the hand holds a selected page, the panel's alpha is cut to 25% (75% transparent) and its CanvasGroup stops blocking raycasts, so taps reach what is behind it; the game writes the alpha again every frame and never touches blocksRaycasts, so the alpha reverts by itself and blocksRaycasts is put back when no page is selected
 // Not ported: hands of more than 10 pages (the PC mod adds card UI objects), the 65 to 60 rotation constant, and the mouse wheel.
 // Off by default: DM_MOD_ECPV=1 turns the callback on (the launcher's Mods > Enhanced Combat Page View switch, or env.txt). The gate is always in the code and passes through while it is off.
 #include "dm.h"
@@ -29,6 +30,12 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define K_INFO_CLOSE 0x21C86A0u
 #define S_MI_BM 0x51D93E8u
 #define S_MI_STAGE 0x51C6C60u
+
+#define K_CANVASGROUP_GET_ALPHA 0x34FAD60u
+#define K_CANVASGROUP_SET_ALPHA 0x34FADB0u
+#define K_CANVASGROUP_GET_BLOCKS 0x34FAEE0u
+#define K_CANVASGROUP_SET_BLOCKS 0x34FAF30u
+#define K_TIME_FRAMECOUNT 0x19B9380u
 
 #define K_OBJECT_INSTANTIATE_PARENT 0x19B4E90u
 #define K_OBJECT_DESTROY 0x19B5310u
@@ -91,6 +98,10 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define HOLD_GRACE 0.2f
 #define HOLD_MOVE_PIXELS 48.0f
 #define HOLD_MAX_STEP 0.1f
+#define F_INFO_CANVASGROUP 0xD0
+#define DIM_ALPHA 0.25f
+#define DIM_PANELS 8
+#define DIM_MAX_AGE 1
 #define F_HAND_CARDLIST 0x18                    // BattleUnitCardsInHandUI._cardList (List<BattleDiceCardUI>)
 #define F_LIST_ITEMS 0x10
 #define F_LIST_SIZE 0x18
@@ -109,6 +120,12 @@ static uint8_t *s_main;
 static int g_logged;
 static void *s_hand;
 static void *s_keep_die;
+static int s_hand_frame = -1000;
+static int s_dim_evict;
+static struct {
+    void *group;
+    int blocks;
+} s_dim[DIM_PANELS];
 
 static void hold_begin(void *hand, void *card, int pad);
 static void hold_tick(void *hand);
@@ -149,10 +166,23 @@ static void set_zoom(void *card, float scale) {
     FN(K_TRANSFORM_SET_LOCALPOS, void, void *, v3, const void *)(rect, pos, NULL);
 }
 
+static int dim_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DM_MOD_ECPV_DIM");
+        on = v && v[0] && atoi(v) != 0;
+        LOG("[mod enhanced-combat-page-view] fade info panels %s (DM_MOD_ECPV_DIM=%s)", on ? "on" : "off", v ? v : "unset");
+    }
+    return on;
+}
+
+static int frame_count(void) { return FN(K_TIME_FRAMECOUNT, int, const void *)(NULL); }
+
 static void update_run(uint64_t *r, int param) {
     (void)param;
     if (!main_base()) return;
     s_hand = (void *)r[0];
+    if (dim_on()) s_hand_frame = frame_count();
     void *list = field((void *)r[0], F_HAND_CARDLIST);
     void *items = field(list, F_LIST_ITEMS);
     int n = list ? *(const int *)((uintptr_t)list + F_LIST_SIZE) : 0;
@@ -163,6 +193,38 @@ static void update_run(uint64_t *r, int param) {
     }
     hold_tick((void *)r[0]);
     if (g_logged++ < 3) LOG("[mod enhanced-combat-page-view] hand %#llx: %d page(s)", (unsigned long long)r[0], n);
+}
+
+static int page_selected(void) {
+    if (!s_hand || frame_count() - s_hand_frame > DIM_MAX_AGE) return 0;
+    return field(s_hand, F_HAND_SELECTED) != NULL;
+}
+
+static void info_run(uint64_t *r, int param) {
+    (void)param;
+    if (!main_base() || !dim_on()) return;
+    void *group = field((void *)r[19], F_INFO_CANVASGROUP);
+    if (!group) return;
+    int slot = -1, spare = -1;
+    for (int i = 0; i < DIM_PANELS; i++) {
+        if (s_dim[i].group == group) slot = i;
+        else if (!s_dim[i].group && spare < 0) spare = i;
+    }
+    if (page_selected()) {
+        if (slot < 0) {
+            slot = spare >= 0 ? spare : s_dim_evict++ % DIM_PANELS;
+            s_dim[slot].group = group;
+            s_dim[slot].blocks = (int)(FN(K_CANVASGROUP_GET_BLOCKS, uint32_t, void *, const void *)(group, NULL) & 1u);
+            FN(K_CANVASGROUP_SET_BLOCKS, void, void *, int, const void *)(group, 0, NULL);
+            LOG("[mod enhanced-combat-page-view] info panel %#llx faded and click-through", (unsigned long long)(uintptr_t)group);
+        }
+        float alpha = FN(K_CANVASGROUP_GET_ALPHA, float, void *, const void *)(group, NULL);
+        FN(K_CANVASGROUP_SET_ALPHA, void, void *, float, const void *)(group, alpha * DIM_ALPHA, NULL);
+    } else if (slot >= 0) {
+        FN(K_CANVASGROUP_SET_BLOCKS, void, void *, int, const void *)(group, s_dim[slot].blocks, NULL);
+        s_dim[slot].group = NULL;
+        LOG("[mod enhanced-combat-page-view] info panel %#llx restored", (unsigned long long)(uintptr_t)group);
+    }
 }
 
 static int swap_on(void) {
@@ -444,10 +506,12 @@ static void on_update_pre(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_r
 static void on_swap_press(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, swap_run); }
 static void on_apply_pre(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, apply_pre_run); }
 static void on_apply_post(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, apply_post_run); }
+static void on_info_alpha(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, info_run); }
 
 __attribute__((constructor)) static void mod_enhanced_combat_page_view_attach(void) {
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_UPDATE_PRE, on_update_pre);
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_SWAP_PRESS, on_swap_press);
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_APPLY_PRE, on_apply_pre);
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_APPLY_POST, on_apply_post);
+    gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_INFO_ALPHA, on_info_alpha);
 }
