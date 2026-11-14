@@ -1,0 +1,47 @@
+{
+  "id": "timescale-control",
+  "title": "Timescale Control",
+  "description": "Port of Punai's Timescale Control (Workshop 3276965287) as a host callback on two observation gates: while a battle is in its combat phase (StageController._phase from PeekFirstTurnUnitPhase on, round end, battle story and battle end excluded), Time.timeScale is multiplied by the chosen speed (1.00x to 4.00x), and it returns to the game's own value in every other phase, in menus and when the battle ends. The game's own slow motion (a max offensive die hitting its target) is kept and scaled with it. For Library of Ruina 1.0.3.",
+  "launcher": {
+    "env": "DM_MOD_TIMESCALE",
+    "category": "Quality of Life",
+    "label": "Timescale Control",
+    "note": "Allows you to speed up the combat phase. Original mod by [Punai’s Steam Workshop](https://steamcommunity.com/workshop/filedetails/?id=3276965287)"
+  },
+  "settings": [
+    {
+      "env": "DM_MOD_TIMESCALE_SPEED",
+      "kind": "range",
+      "format": "multiplier",
+      "label": "Combat speed",
+      "note": "How much faster the combat phase plays. x1.00 is the normal speed, x4.00 is four times as fast.",
+      "default": "2.00",
+      "min": 1.0,
+      "max": 4.0,
+      "step": 0.05
+    }
+  ],
+  "game": "Library of Ruina 1.0.3",
+  "gates": [
+    "fixed_update_pre",
+    "frame_pre"
+  ],
+  "host": "host.c",
+  "obs": {
+    "_comment": "main build ID -> rows {gate, offset, word, reason}; offsets are RVAs of dump.cs.",
+    "aeea627ddbd1214764dfef5f965e94a2": [
+      {
+        "gate": "fixed_update_pre",
+        "offset": "0x1d03874",
+        "word": "fd001be8",
+        "reason": "StageController.OnFixedUpdate, second instruction (every fixed step of a battle; the entry word is the gate of max-emotion): x0 = the StageController, whose _phase (0x70) tells the planning phases (0 to 5) from the combat phases"
+      },
+      {
+        "gate": "frame_pre",
+        "offset": "0x1ed1a88",
+        "word": "910003fd",
+        "reason": "InputManager.Update, third instruction (once a frame, in every scene; the entry and second words are the gates of sharp-text and max-lod): the callback keeps Time.timeScale at the chosen speed in the combat phase and hands it back to the game outside it"
+      }
+    ]
+  }
+}
