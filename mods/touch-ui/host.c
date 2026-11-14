@@ -407,6 +407,8 @@ static uint64_t game_frame(void) {
 #define DOUBLE_DICE_MS 500u
 #define DOUBLE_RADIUS 32.0f
 #define K_HAND_RIGHT_READ_RETURN 0x1FDF29Cu
+#define F_INFO_CLICKED_UNIT 0x150u
+#define INFO_LIVE_MS 250u
 
 static int build_matches(void);
 
@@ -426,6 +428,24 @@ static int hand_active(void) {
     return *(volatile uint8_t *)((uintptr_t)s_hand + F_HAND_ACTIVE) != 0;
 }
 
+static void *s_info[2];
+static uint64_t s_info_ms[2];
+
+static int unit_selected(void) {
+    uint64_t t = now_ms();
+    for (int i = 0; i < 2; i++)
+        if (s_info[i] && t - s_info_ms[i] <= INFO_LIVE_MS && *(volatile uint8_t *)((uintptr_t)s_info[i] + F_INFO_CLICKED_UNIT)) return 1;
+    return 0;
+}
+
+static void on_info_update(uint64_t *r) {
+    if (!mod_enabled() || !dm_touchscreen_mode()) return;
+    void *info = (void *)(uintptr_t)r[0];
+    int i = info == s_info[0] ? 0 : info == s_info[1] ? 1 : s_info_ms[0] <= s_info_ms[1] ? 0 : 1;
+    s_info[i] = info;
+    s_info_ms[i] = now_ms();
+}
+
 static void track_double(const dm_mouse_frame_t *f) {
     if (s_as_right_end) s_as_right = s_as_right_end = s_dice_double = 0;
     uint64_t t = now_ms();
@@ -434,7 +454,8 @@ static void track_double(const dm_mouse_frame_t *f) {
         s_press_seq++;
         int dice = t - s_dice_ms <= DOUBLE_DICE_MS;
         int hand = hand_active();
-        int dbl = s_tap.valid && t - s_tap.up_ms <= DOUBLE_GAP_MS && hypotf(x - s_tap.x, y - s_tap.y) <= DOUBLE_RADIUS && (dice || hand);
+        int unit = unit_selected();
+        int dbl = s_tap.valid && t - s_tap.up_ms <= DOUBLE_GAP_MS && hypotf(x - s_tap.x, y - s_tap.y) <= DOUBLE_RADIUS && (dice || hand || unit);
         int on_dice = dbl && s_dice_ms >= s_tap.down_ms;
         s_tap.valid = 0;
         s_tap.pressed = !dbl;
@@ -442,7 +463,7 @@ static void track_double(const dm_mouse_frame_t *f) {
             s_as_right = 1;
             s_dice_double = on_dice;
             static int n_log;
-            if (n_log++ < 40) LOG("[mod touch-ui] double tap at (%.0f,%.0f) on %s: sent as the right button%s", x, y, on_dice ? "a speed dice" : "the shown hand", on_dice ? ", hidden from the hand so it stays shown" : "");
+            if (n_log++ < 40) LOG("[mod touch-ui] double tap at (%.0f,%.0f) on %s: sent as the right button%s", x, y, on_dice ? "a speed dice" : hand ? "the shown hand" : "a selected character", on_dice ? ", hidden from the hand so it stays shown" : "");
         } else {
             s_tap.down_ms = t;
             s_tap.x = x;
@@ -718,6 +739,11 @@ static void on_hand_update(uint64_t *r) {
     s_hand_ms = now_ms();
 }
 
+static void on_dice_reclick(uint64_t *r) {
+    if (!mod_enabled() || !dm_touchscreen_mode() || !main_base() || !build_matches()) return;
+    if (!(r[0] & 1u) && !hand_active()) r[0] = 1;
+}
+
 static void on_dice_submit(void) {
     if (!mod_enabled() || !dm_touchscreen_mode()) return;
     s_dice_ms = now_ms();
@@ -953,6 +979,8 @@ static void on_icall_resolved(uint64_t *r, int p) {
     if (p == 2) { on_cam_late(r, p); return; }
     if (p == 14) { on_hand_update(r); return; }
     if (p == 15) { on_dice_submit(); return; }
+    if (p == 20) { on_dice_reclick(r); return; }
+    if (p == 21) { on_info_update(r); return; }
     if (p > 2) { on_scroll_ui(r, p - 2); return; }
     if (!mod_enabled()) return;
     const char *name = (const char *)(uintptr_t)r[19];

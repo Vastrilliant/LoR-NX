@@ -1,7 +1,7 @@
 {
   "id": "touch-ui",
   "title": "Touch UI",
-  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot and keeps the librarian's hand shown, and anywhere else while the hand is shown it exits the hand, gives the touch feedback only for a tap that lands on something clickable (a button, toggle, combat page or speed dice), and puts a Leave button, built from the preparation menu's own Leave button, at the bottom center of the reception bookshelf, which has no back button",
+  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot and keeps the librarian's hand shown (a click on the already selected speed dice no longer leaves it, the first tap of the double tap doing nothing), while a character is selected it closes the character anywhere on the screen, and anywhere else while the hand is shown it exits the hand, gives the touch feedback only for a tap that lands on something clickable (a button, toggle, combat page or speed dice), and puts a Leave button, built from the preparation menu's own Leave button, at the bottom center of the reception bookshelf, which has no back button",
   "launcher": {
     "env": "DM_MOD_TOUCHUI",
     "category": "Quality of Life",
@@ -29,7 +29,8 @@
       "0x1bca51c": "12000035",
       "0x847874": "f9409108",
       "0x847894": "f9409108",
-      "0x8478c8": "f94092b5"
+      "0x8478c8": "f94092b5",
+      "0x233fbd0": "36001c14"
     }
   },
   "obs": {
@@ -172,6 +173,20 @@
         "offset": "0x297d550",
         "word": "a9be7bfd",
         "reason": "Toggle.OnPointerClick entry: x0 = the toggle; when it is interactable (+0xD0) the tap clicked a toggle and the host gives the touch feedback"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 20,
+        "offset": "0x233fbc4",
+        "word": "2a0003f4",
+        "reason": "SpeedDiceUI.OnClickSpeedDice, before mov w20,w0 (w0 is the click's select flag): the patch at 0x233fbd0 turns the branch the game takes on a click of the already selected ally dice, which called set_selectedAllyDice(null) and left the dice, into one to the function's epilogue; if the selection went stale while the hand is hidden that would leave the dice untappable, so the flag is forced to select in that case"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 21,
+        "offset": "0x21c5580",
+        "word": "6dbd23e9",
+        "reason": "BattleUnitInformationUI.Update entry: x0 = the information panel; the host remembers the live panels, and _hasClickedUnit (+0x150) set on one of them is a character being selected, which a double tap anywhere on the screen closes as a right click"
       }
     ]
   }
