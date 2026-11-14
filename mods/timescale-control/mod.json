@@ -1,7 +1,7 @@
 {
   "id": "timescale-control",
   "title": "Timescale Control",
-  "description": "Port of Punai's Timescale Control (Workshop 3276965287) as a host callback on two observation gates: while a battle is in its combat phase (StageController._phase from PeekFirstTurnUnitPhase on, round end, battle story and battle end excluded), Time.timeScale is multiplied by the chosen speed (1.00x to 4.00x), and it returns to the game's own value in every other phase, in menus and when the battle ends. The game's own slow motion (a max offensive die hitting its target) is kept and scaled with it. For Library of Ruina 1.0.3.",
+  "description": "Port of Punai's Timescale Control (Workshop 3276965287) as a host callback on two observation gates: while a battle is in its combat phase (StageController._phase from PeekFirstTurnUnitPhase on, round end, battle story and battle end excluded), the value the game passes to Time.set_timeScale is multiplied by the chosen speed (1.00x to 4.00x). The game's TimeManager.Update writes Time.timeScale every frame (cur time scale, time level, slow motion), so the game's own value is scaled where it is written and nothing is set from outside; the game's own slow motion is kept and scaled with it, and outside the combat phase the value passes through unchanged. For Library of Ruina 1.0.3.",
   "launcher": {
     "env": "DM_MOD_TIMESCALE",
     "category": "Quality of Life",
@@ -24,7 +24,7 @@
   "game": "Library of Ruina 1.0.3",
   "gates": [
     "fixed_update_pre",
-    "frame_pre"
+    "set_timescale_pre"
   ],
   "host": "host.c",
   "obs": {
@@ -37,10 +37,10 @@
         "reason": "StageController.OnFixedUpdate, second instruction (every fixed step of a battle; the entry word is the gate of max-emotion): x0 = the StageController, whose _phase (0x70) tells the planning phases (0 to 5) from the combat phases"
       },
       {
-        "gate": "frame_pre",
-        "offset": "0x1ed1a88",
-        "word": "910003fd",
-        "reason": "InputManager.Update, third instruction (once a frame, in every scene; the entry and second words are the gates of sharp-text and max-lod): the callback keeps Time.timeScale at the chosen speed in the combat phase and hands it back to the game outside it"
+        "gate": "set_timescale_pre",
+        "offset": "0x19b9320",
+        "word": "fc1e0fe8",
+        "reason": "Time.set_timeScale managed wrapper, entry (TimeManager.Update tail-calls it every frame with cur * slow factor in s0): the callback multiplies s0, saved at +256 of the gate frame, by the chosen speed while the battle is in its combat phase"
       }
     ]
   }
