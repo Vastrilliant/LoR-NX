@@ -10,7 +10,8 @@ int dm_touchscreen_mode(void);
 #define MASK_SLOTS 128
 #define MASK_INTERVAL 2
 #define POINTER_REFRESH 6
-#define CLIP_INTERVAL 2
+#define CLIP_INTERVAL_MIN 2
+#define CLIP_INTERVAL_MAX 4
 #define TEXT_SCALE_INTERVAL 4
 
 static uint8_t *main_base(void) {
@@ -43,6 +44,17 @@ static int pointer_enabled(void) {
 static int clip_enabled(void) {
     static int master = -1, sub = -1;
     return switch_on("DM_MOD_COMPLISTTAIL", &master) && switch_on("DM_MOD_COMPLISTTAIL_CLIP", &sub);
+}
+
+static int clip_interval(void) {
+    static int n;
+    if (!n) {
+        const char *v = getenv("DM_MOD_COMPLISTTAIL_CLIP_EVERY");
+        n = v ? atoi(v) : CLIP_INTERVAL_MIN;
+        if (n < CLIP_INTERVAL_MIN) n = CLIP_INTERVAL_MIN;
+        if (n > CLIP_INTERVAL_MAX) n = CLIP_INTERVAL_MAX;
+    }
+    return n;
 }
 
 static int text_scale_enabled(void) {
@@ -78,10 +90,10 @@ static void on_clip_cull(uint64_t *r, int p) {
         tick = 0;
         return;
     }
-    if (++tick % CLIP_INTERVAL == 0) return;
+    if (++tick % clip_interval() == 0) return;
     r[22] = 0;
     static int logged;
-    if (!logged++) LOG("[mod component-list-tail] RectMask2D clipping throttled to every %d frames", CLIP_INTERVAL);
+    if (!logged++) LOG("[mod component-list-tail] RectMask2D clipping throttled to every %d frames", clip_interval());
 }
 
 static void on_text_scale(uint64_t *r, int p) {

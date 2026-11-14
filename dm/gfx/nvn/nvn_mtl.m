@@ -3532,8 +3532,8 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         // The unused plane loads and stores unchanged; dss_get still disables its test
         // and writes. Native depth-only / stencil-only formats retain their own slots.
         int combined = pf == MTLPixelFormatDepth32Float_Stencil8;
-        int depth = combined || (clear_only != 3 && (pf == MTLPixelFormatDepth16Unorm || pf == MTLPixelFormatDepth32Float));
-        int stencil = combined || (clear_only != 4 && (pf == MTLPixelFormatStencil8 || pf == MTLPixelFormatX32_Stencil8));
+        int depth = (combined || (clear_only != 3 && (pf == MTLPixelFormatDepth16Unorm || pf == MTLPixelFormatDepth32Float))) && (clear_only != 1 || R.clear_d);
+        int stencil = (combined || (clear_only != 4 && (pf == MTLPixelFormatStencil8 || pf == MTLPixelFormatX32_Stencil8))) && (clear_only != 1 || R.clear_s);
         if (t && depth) {
             pd.depthAttachment.loadAction = R.clear_d ? MTLLoadActionClear : MTLLoadActionLoad;
             pd.depthAttachment.clearDepth = pf == MTLPixelFormatDepth16Unorm ? nvn_depth16_clear_value(R.cd) : R.cd; pd.depthAttachment.storeAction = MTLStoreActionStore;
@@ -9415,14 +9415,14 @@ static int mdx_next(const p_draw *dw, const p_draw_idx *di) {
 // five: four passes stored 27 MB of cleared memory at 1600x900 and the G-buffer pass loaded it again. Such clears now wait (g_lc): the next pass that attaches the same texture level and
 // layer through the same view takes the clear as its load action. The rest land as before, in order, each in a pass of its own (lc_land), before anything else could see their textures: a
 // draw whose program samples one, the pass of a draw that does not attach it (before that pass opens), and any operation other than targets, clears, state, uniform updates and buffer
-// copies or fills, and the end of a command list (not of a sub-list it calls). A newer clear of the same subresource replaces an older one. Off in TBDR mode (its hoisting moves clear-only passes its own way).
-// DM_NVN_LAZY_CLEAR=0 turns it off
+// copies or fills, and the end of a command list (not of a sub-list it calls). A newer clear of the same subresource replaces an older one. Off by default in TBDR mode (its hoisting moves clear-only passes its own way).
+// DM_NVN_LAZY_CLEAR=0 turns it off, DM_NVN_LAZY_CLEAR=1 turns it on in TBDR mode too
 typedef struct { p_set_rt rt; uint8_t clear_c[8]; MTLClearColor cc[8]; uint8_t clear_d, clear_s; double cd; uint32_t cs; } lc_group;
 enum { LC_MAX = 8 };
 static lc_group g_lc[LC_MAX]; static int g_nlc;
 static uint64_t g_lc_taken, g_lc_landed, g_lc_dropped;   // clears taken by a later pass / clear-only passes opened / clear-only passes elided
 void mtl_lc_stats(uint64_t *taken, uint64_t *landed, uint64_t *dropped) { *taken = g_lc_taken; *landed = g_lc_landed; *dropped = g_lc_dropped; }
-static int lc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_LAZY_CLEAR"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("DM_NVN_LAZY_CLEAR=0: clears with no draw open a pass of their own as before"); } return v && !tbdr_on(); }
+static int lc_on(void) { static int v = -1, t = 0; if (v < 0) { const char *e = getenv("DM_NVN_LAZY_CLEAR"); v = !(e && !strcmp(e, "0")); t = e && !strcmp(e, "1"); if (!v) MLOG("DM_NVN_LAZY_CLEAR=0: clears with no draw open a pass of their own as before"); else if (t && tbdr_on()) MLOG("DM_NVN_LAZY_CLEAR=1: clears with no draw wait for the next pass that attaches their targets in TBDR mode"); } return v && (!tbdr_on() || t); }
 static int lc_elide_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_LC_ELIDE"); v = e ? !strcmp(e, "1") : tbdr_on(); if (v) MLOG("DM_NVN_LC_ELIDE=1: omit a waiting depth/stencil clear when the submission index proves a later full clear precedes every read"); } return v; }
 static int lc_same(const p_set_rt *a, int ka, const p_set_rt *b, int kb) {   // the same subresource through the same view (k = 8: depth / stencil)
     uint64_t s1, s2; int l1, l2, x1, x2; rt_sub(a, ka, &s1, &l1, &x1); rt_sub(b, kb, &s2, &l2, &x2);
@@ -11148,6 +11148,7 @@ void mtl_exec(const uint8_t *p) {
                 if (g_enc && g_sm_pass && !pend && !g_game_barrier) { int sl;   // another layer of the slice-merged pass's level (sm_scan planned it)
                     if (sm_rt_slice(&R.rt, r, &sl) && sl >= g_sm_lo && sl <= g_sm_hi) { R.rt = *r; g_sm_cur = sl; g_sm_ncont++;
                         { void td_note_layer(id<MTLTexture>, uint64_t, NSUInteger, NSUInteger); td_note_layer(tex_mtl(r->color[0]), r->color[0]->serial, r->cview[0].set_levels ? r->cview[0].base_level : 0, (NSUInteger)sl); } PD("M %llu slice-merged pass goes on in layer %d", g_stat_pass, sl); break; } }
+                if (pend && !g_enc && R.has_rt && rt_same(&R.rt, r)) { sub_cut(); R.rt = *r; break; }
                 if (pend && !g_enc && g_cb && lc_on()) lc_push(); else rp_flush();   // clears with no draw wait for the next pass that attaches their targets (lc_push)
                 sub_cut(); R.rt = *r; R.has_rt = 1; break;
             }

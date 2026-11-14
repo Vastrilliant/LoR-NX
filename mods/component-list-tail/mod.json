@@ -11,7 +11,8 @@
   "settings": [
     {"env": "DM_MOD_COMPLISTTAIL_MASKS", "kind": "toggle", "label": "Throttle sprite mask updates", "note": "Character sprite masks re-check their sprite renderer every frame. This does it every other frame, so a mask can follow a character's visibility one frame late.", "default": "0"},
     {"env": "DM_MOD_COMPLISTTAIL_POINTER", "kind": "toggle", "label": "Skip idle pointer updates", "note": "Skips the per-frame UI raycast while the touchscreen pointer is not moving or pressed, and still refreshes it about every 6 frames. Touchscreen Mode only.", "default": "0"},
-    {"env": "DM_MOD_COMPLISTTAIL_CLIP", "kind": "toggle", "label": "Throttle UI clipping", "note": "Masked UI lists (RectMask2D) re-cull all their children every frame. This does it every other frame, and every frame while masks are added or removed, so an item can enter a list's view one frame late.", "default": "0"},
+    {"env": "DM_MOD_COMPLISTTAIL_CLIP", "kind": "toggle", "label": "Throttle UI clipping", "note": "Masked UI lists (RectMask2D) re-cull all their children every frame. This does it only every few frames (see the next setting), and every frame while masks are added or removed, so an item can enter a list's view a frame or two late.", "default": "0"},
+    {"env": "DM_MOD_COMPLISTTAIL_CLIP_EVERY", "kind": "range", "label": "UI clipping interval", "note": "Frames between UI clipping passes while Throttle UI clipping is on. 2 is every other frame; 4 saves the most CPU but an item can enter a list's view up to three frames late.", "default": "2", "min": 2, "max": 4, "step": 1},
     {"env": "DM_MOD_COMPLISTTAIL_TEXTSCALE", "kind": "toggle", "label": "Throttle text scale checks", "note": "Every text label reads its world scale each frame to keep its edges sharp. This checks each label every fourth frame, so a label that is scaling can look slightly soft for up to three frames.", "default": "0"}
   ],
   "game": "Library of Ruina 1.0.3",
