@@ -13,7 +13,9 @@ final class LauncherAudio {
     private var music: AVAudioPlayer?
     private var dice: AVAudioPlayer?
     private var burn: AVAudioPlayer?
-    private var effects: [String: AVAudioPlayer] = [:]   // the Saves menu's sound effects (SaveSlots/<name>.wav), loaded on first use and replayed from the start
+    private var effects: [String: AVAudioPlayer] = [:]   // the Saves menu's sound effects (SaveSlots/<name>.wav), loaded once and replayed from the start
+    private let effectsLock = NSLock()   // preloadEffects runs off the main thread
+    static let effectNames = ["Popup_FloorLevelup_Start", "Ui_BookApply", "Page_Turn"]
     private var leaving = false   // Play was pressed: the music is stopped and must not be restarted
     private let timers = DispatchQueue(label: "launcher.audio.timers", qos: .userInitiated)   // the dice's release timer: not the main queue (the game's start may keep it busy)
 
@@ -49,10 +51,18 @@ final class LauncherAudio {
         burn?.play()
     }
 
+    /// Loads the Saves menu's sounds ahead of time (the launcher appeared), so the first one does not stall the page that plays it. Safe off the main thread.
+    func preloadEffects() { for name in Self.effectNames { _ = effect(name) } }
+
+    private func effect(_ name: String) -> AVAudioPlayer? {
+        effectsLock.lock(); defer { effectsLock.unlock() }
+        if effects[name] == nil { effects[name] = player(name, "wav", in: SaveStore.folder) }
+        return effects[name]
+    }
+
     /// Plays SaveSlots/<name>.wav from the start (a tap in quick succession restarts it). A missing file is just no sound.
     func playEffect(_ name: String) {
-        if effects[name] == nil { effects[name] = player(name, "wav", in: SaveStore.folder) }
-        guard let effect = effects[name] else { return }
+        guard let effect = effect(name) else { return }
         effect.currentTime = 0
         effect.play()
     }

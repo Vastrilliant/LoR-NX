@@ -205,22 +205,25 @@ private struct LauncherView: View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
                 VStack(spacing: 16) {
-                    if let thumbnail = launcherThumbnail() {   // the game's own picture (dm/ios/Resources/LauncherThumbnail.png), shown whole
-                        Image(uiImage: thumbnail).resizable().scaledToFit()
-                            .frame(maxWidth: .infinity, maxHeight: 150)
-                            .accessibilityHidden(true)
-                    } else if let icon = appIcon() {
-                        Image(uiImage: icon).resizable().frame(width: 96, height: 96)
-                            .clipShape(RoundedRectangle(cornerRadius: 22))
-                            .accessibilityHidden(true)
+                    VStack(spacing: 16) {   // the picture and texts bend with the ripple; the Play button does not (a glass button under a shader)
+                        if let thumbnail = launcherThumbnail() {   // the game's own picture (dm/ios/Resources/LauncherThumbnail.png), shown whole
+                            Image(uiImage: thumbnail).resizable().scaledToFit()
+                                .frame(maxWidth: .infinity, maxHeight: 150)
+                                .accessibilityHidden(true)
+                        } else if let icon = appIcon() {
+                            Image(uiImage: icon).resizable().frame(width: 96, height: 96)
+                                .clipShape(RoundedRectangle(cornerRadius: 22))
+                                .accessibilityHidden(true)
+                        }
+                        Text((info("CFBundleDisplayName") as? String) ?? "Game")
+                            .font(.title.weight(.bold)).multilineTextAlignment(.center)
+                        Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")")
+                            .font(.callout).foregroundStyle(.secondary)
+                        if let nx = info("NXVersion") as? String, !nx.isEmpty {
+                            Text("LoR NX v\(nx)").font(.callout).foregroundStyle(.secondary)
+                        }
                     }
-                    Text((info("CFBundleDisplayName") as? String) ?? "Game")
-                        .font(.title.weight(.bold)).multilineTextAlignment(.center)
-                    Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")")
-                        .font(.callout).foregroundStyle(.secondary)
-                    if let nx = info("NXVersion") as? String, !nx.isEmpty {
-                        Text("LoR NX v\(nx)").font(.callout).foregroundStyle(.secondary)
-                    }
+                    .hexRippleDistortion()
                     playButton
                 }
                 .padding(16)
@@ -260,7 +263,7 @@ private struct LauncherView: View {
                     .toolbar(.hidden, for: .navigationBar)
                     .navigationDestination(for: String.self) { env in
                         if env == Self.modsPage { ModsBrowserPage(m: m) { modPage.append($0) } }
-                        else if env == Self.savesPage { SaveSlotsPage { ripple = HexRipple(origin: $0) } }
+                        else if env == Self.savesPage { SaveSlotsPage { tile, icon in startRipple(tile: tile, icon: icon) } }
                         else if let mod = m.settings.first(where: { $0.env == env }) { ModSettingsPage(mod: mod, m: m) }
                     }
                 }
@@ -272,14 +275,10 @@ private struct LauncherView: View {
             case .swipe: GestureLayoutEditorView(dedicatedB: m.values["DM_DEDICATED_B"] == "1", stylized: m.values["DM_STYLIZED_CONTROLS"] == "1")
             }
         }
-        .overlay {   // over the whole launcher, Play column included; the ripple's origin is in global coordinates
+        .environment(\.hexRipple, ripple)   // the parts that distort with the ripple read it (HexRippleDistortion)
+        .overlay {   // over the whole launcher, Play column included
             GeometryReader { proxy in
-                if let r = ripple {
-                    let corner = proxy.frame(in: .global).origin
-                    HexRippleView(ripple: r, origin: CGPoint(x: r.origin.x - corner.x, y: r.origin.y - corner.y)) {
-                        if ripple == r { ripple = nil }
-                    }
-                }
+                if let r = ripple { HexRippleView(ripple: r, corner: proxy.frame(in: .global).origin) }
             }
             .ignoresSafeArea()
             .allowsHitTesting(false)
@@ -288,15 +287,28 @@ private struct LauncherView: View {
             if old.contains(Self.savesPage) && !new.contains(Self.savesPage) { audio.playEffect("Page_Turn") }
         }
         .preferredColorScheme(.dark)
-        .onAppear { audio.startMusic() }
+        .onAppear {
+            audio.startMusic()
+            DispatchQueue.global(qos: .utility).async { _ = SaveSlot.icons; audio.preloadEffects() }   // the Saves page's pictures and sounds, ready before it opens
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { audio.resumeMusic() } else { audio.pauseMusic() }
         }
         .task {
             while !Task.isCancelled {
-                if !FolderPicker.isShowing { memory = os_proc_available_memory() }   // no re-render of the launcher under the folder picker
+                if !FolderPicker.isShowing && !modPage.contains(Self.savesPage) { memory = os_proc_available_memory() }   // no re-render of the launcher under the folder picker
                 try? await Task.sleep(for: .seconds(2))
             }
+        }
+    }
+
+    // Manage saves confirmed a save: the ripple spreads from the tile (global frame) for HexRippleTiming.duration, then is gone
+    private func startRipple(tile: CGRect, icon: UIImage?) {
+        let r = HexRipple(tile: tile, icon: icon)
+        ripple = r
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(HexRippleTiming.duration + 0.1))
+            if ripple == r { ripple = nil }
         }
     }
 
