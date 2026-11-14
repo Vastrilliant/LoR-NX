@@ -2,7 +2,7 @@
 // The music loops while the launcher is up. Play stops the music at once and rolls the dice, which play out, while the game starts at once: nothing waits for the audio.
 // So the audio outlives the launcher view (one shared instance), and its timer runs on its own queue, not the main one, which the game's start may keep busy.
 // The audio session is left alone on purpose: main.m has already set it up for the game (front_ios_audio_session), and changing its category here would carry over into the game.
-// Files (dm/ios/Resources, bundled by project.yml): LauncherBGM.m4a (the first 1:30 of the track), LauncherDiceRoll.wav and SaveSlots/BookBurn.mp3 (the Saves menu's confirm sound). A missing file just means no sound, never a stuck launcher.
+// Files (dm/ios/Resources, bundled by project.yml): LauncherBGM.m4a (the first 1:30 of the track), LauncherDiceRoll.wav and SaveSlots/BookBurn.mp3 (the Saves menu's confirm sound), and the Saves menu's other sounds in SaveSlots/ (playEffect): Popup_FloorLevelup_Start.wav (it opens), Ui_BookApply.wav (a tile tapped), Page_Turn.wav (it is dismissed). A missing file just means no sound, never a stuck launcher.
 import AVFoundation
 
 final class LauncherAudio {
@@ -13,6 +13,7 @@ final class LauncherAudio {
     private var music: AVAudioPlayer?
     private var dice: AVAudioPlayer?
     private var burn: AVAudioPlayer?
+    private var effects: [String: AVAudioPlayer] = [:]   // the Saves menu's sound effects (SaveSlots/<name>.wav), loaded on first use and replayed from the start
     private var leaving = false   // Play was pressed: the music is stopped and must not be restarted
     private let timers = DispatchQueue(label: "launcher.audio.timers", qos: .userInitiated)   // the dice's release timer: not the main queue (the game's start may keep it busy)
 
@@ -46,6 +47,14 @@ final class LauncherAudio {
         burn?.stop()
         burn = player("BookBurn", "mp3", in: SaveStore.folder)
         burn?.play()
+    }
+
+    /// Plays SaveSlots/<name>.wav from the start (a tap in quick succession restarts it). A missing file is just no sound.
+    func playEffect(_ name: String) {
+        if effects[name] == nil { effects[name] = player(name, "wav", in: SaveStore.folder) }
+        guard let effect = effects[name] else { return }
+        effect.currentTime = 0
+        effect.play()
     }
 
     /// Pauses / resumes the music with the app (background / foreground).

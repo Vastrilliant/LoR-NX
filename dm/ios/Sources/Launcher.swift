@@ -124,9 +124,10 @@ private struct LauncherView: View {
         var id: String { rawValue }
     }
     @State private var layoutEditor: LayoutEditor?
-    @State private var savesOpen = false
+    @State private var ripple: HexRipple?   // the hexagon ripple on screen (Manage saves, once a save is confirmed)
     @State private var modPage: [String] = []   // the pages pushed on the list: the mods page (modsPage) and a mod's settings page (its env): the navigation stack's path
     private static let modsPage = "mods"   // not a DM_ name, so never a mod's env
+    private static let savesPage = "saves"   // the Manage saves page (SaveSlotsPage); likewise never a mod's env
 
     // Opens the layout editor of the Swipe touch layout (GestureLayoutEditor.swift).
     // Touchscreen Mode hides the swipe gamepad, so the button is not drawn while it is on
@@ -160,7 +161,7 @@ private struct LauncherView: View {
 
     private var savesSection: some View {
         Section("Saves") {
-            Button { savesOpen = true } label: {
+            Button { modPage.append(Self.savesPage) } label: {
                 HStack {
                     Text("Manage saves")
                     Spacer()
@@ -259,6 +260,7 @@ private struct LauncherView: View {
                     .toolbar(.hidden, for: .navigationBar)
                     .navigationDestination(for: String.self) { env in
                         if env == Self.modsPage { ModsBrowserPage(m: m) { modPage.append($0) } }
+                        else if env == Self.savesPage { SaveSlotsPage { ripple = HexRipple(origin: $0) } }
                         else if let mod = m.settings.first(where: { $0.env == env }) { ModSettingsPage(mod: mod, m: m) }
                     }
                 }
@@ -270,8 +272,20 @@ private struct LauncherView: View {
             case .swipe: GestureLayoutEditorView(dedicatedB: m.values["DM_DEDICATED_B"] == "1", stylized: m.values["DM_STYLIZED_CONTROLS"] == "1")
             }
         }
-        .fullScreenCover(isPresented: $savesOpen) {
-            SaveSlotsPage { savesOpen = false }
+        .overlay {   // over the whole launcher, Play column included; the ripple's origin is in global coordinates
+            GeometryReader { proxy in
+                if let r = ripple {
+                    let corner = proxy.frame(in: .global).origin
+                    HexRippleView(ripple: r, origin: CGPoint(x: r.origin.x - corner.x, y: r.origin.y - corner.y)) {
+                        if ripple == r { ripple = nil }
+                    }
+                }
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+        }
+        .onChange(of: modPage) { old, new in   // the Manage saves page was dismissed (back button or swipe)
+            if old.contains(Self.savesPage) && !new.contains(Self.savesPage) { audio.playEffect("Page_Turn") }
         }
         .preferredColorScheme(.dark)
         .onAppear { audio.startMusic() }
