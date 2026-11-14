@@ -2,20 +2,20 @@ import SwiftUI
 import UIKit
 
 enum SaveSlot: String, CaseIterable, Identifiable {
-    case burn, canard, myth, legend, plague, nightmare, star, impuritas
+    case burn, myth, legend, plague, nightmare, star, impuritas, end
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .burn: return "Burn Save"
-        case .canard: return "Canard"
         case .myth: return "Urban Myth"
         case .legend: return "Urban Legend"
         case .plague: return "Urban Plague"
         case .nightmare: return "Urban Nightmare"
         case .star: return "Star of the City"
         case .impuritas: return "Impuritas Civitatis"
+        case .end: return "The End"
         }
     }
 
@@ -97,6 +97,8 @@ struct SaveSlotsPage: View {
 
     private let columns = 4
     private let rows = 2
+    private let rowStep: CGFloat = 0.87
+    private let rowShift: CGFloat = 0.5
     private let headerHeight: CGFloat = 72
     private let footerHeight: CGFloat = 84
 
@@ -106,7 +108,7 @@ struct SaveSlotsPage: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let cell = min(geometry.size.width / CGFloat(columns), (geometry.size.height - headerHeight - footerHeight) / CGFloat(rows))
+            let cell = min(geometry.size.width / (CGFloat(columns) + rowShift), (geometry.size.height - headerHeight - footerHeight) / (1 + rowStep * CGFloat(rows - 1)))
             ZStack(alignment: .topLeading) {
                 Color.black.ignoresSafeArea()
                 VStack(spacing: 0) {
@@ -153,19 +155,16 @@ struct SaveSlotsPage: View {
 
     private func grid(cell: CGFloat) -> some View {
         let slots = SaveSlot.allCases
-        return ZStack {
+        return ZStack(alignment: .topLeading) {
             Color.black
-            VStack(spacing: 0) {
-                ForEach(0..<rows, id: \.self) { row in
-                    HStack(spacing: 0) {
-                        ForEach(0..<columns, id: \.self) { column in
-                            tile(slots[row * columns + column], cell: cell)
-                        }
-                    }
-                }
+            ForEach(Array(slots.enumerated()), id: \.element.id) { index, slot in
+                let row = index / columns
+                let column = index % columns
+                tile(slot, cell: cell)
+                    .offset(x: (CGFloat(column) + (row % 2 == 1 ? rowShift : 0)) * cell, y: CGFloat(row) * rowStep * cell)
             }
         }
-        .frame(width: cell * CGFloat(columns), height: cell * CGFloat(rows))
+        .frame(width: cell * (CGFloat(columns) + rowShift), height: cell * (1 + rowStep * CGFloat(rows - 1)), alignment: .topLeading)
         .compositingGroup()
     }
 
@@ -182,7 +181,7 @@ struct SaveSlotsPage: View {
                 }
             }
             .frame(width: cell, height: cell)
-            .contentShape(Rectangle())
+            .contentShape(HexagonShape())
         }
         .buttonStyle(.plain)
         .disabled(!slot.available || working)
@@ -207,5 +206,20 @@ struct SaveSlotsPage: View {
                 }
             }
         }
+    }
+}
+
+struct HexagonShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let w = rect.width, h = rect.height
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + w * 0.5, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + w, y: rect.minY + h * 0.25))
+        path.addLine(to: CGPoint(x: rect.minX + w, y: rect.minY + h * 0.75))
+        path.addLine(to: CGPoint(x: rect.minX + w * 0.5, y: rect.minY + h))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + h * 0.75))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + h * 0.25))
+        path.closeSubpath()
+        return path
     }
 }
