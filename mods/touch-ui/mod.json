@@ -1,7 +1,7 @@
 {
   "id": "touch-ui",
   "title": "Touch UI",
-  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot, and while a librarian's hand is shown it exits the hand, and puts a Leave button, built from the preparation menu's own Leave button, at the bottom center of the reception bookshelf, which has no back button",
+  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot and keeps the librarian's hand shown, and anywhere else while the hand is shown it exits the hand, and puts a Leave button, built from the preparation menu's own Leave button, at the bottom center of the reception bookshelf, which has no back button",
   "launcher": {
     "env": "DM_MOD_TOUCHUI",
     "category": "Quality of Life",
@@ -136,7 +136,7 @@
         "param": 14,
         "offset": "0x1fdf230",
         "word": "a9bd7bfd",
-        "reason": "BattleUnitCardsInHandUI.Update entry: x0 = the hand; its _isActiveState (+0x40) is the hand being shown, and Update leaves it on GetMouseButtonDown(1); a double tap while it is shown is sent as that right button"
+        "reason": "BattleUnitCardsInHandUI.Update entry: x0 = the hand; its _isActiveState (+0x40) is the hand being shown, and Update leaves it on GetMouseButtonDown(1) (the call at 0x1fdf298, returning to 0x1fdf29c); a double tap while it is shown is sent as that right button, except one that began on a speed dice, for which that one call is answered false so the hand stays shown while the dice empties its slot"
       },
       {
         "gate": "icall_resolved",

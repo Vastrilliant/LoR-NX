@@ -397,6 +397,9 @@ static uint64_t game_frame(void) {
 #define DOUBLE_TAP_MS 300u
 #define DOUBLE_DICE_MS 500u
 #define DOUBLE_RADIUS 32.0f
+#define K_HAND_RIGHT_READ_RETURN 0x1FDF29Cu
+
+static int build_matches(void);
 
 static void *s_hand;
 static uint64_t s_hand_ms;
@@ -407,7 +410,7 @@ static struct {
     uint64_t down_ms, up_ms;
     float x, y;
 } s_tap;
-static int s_as_right, s_as_right_end;
+static int s_as_right, s_as_right_end, s_dice_double;
 
 static int hand_active(void) {
     if (!s_hand || now_ms() - s_hand_ms > HAND_LIVE_MS) return 0;
@@ -415,19 +418,21 @@ static int hand_active(void) {
 }
 
 static void track_double(const dm_mouse_frame_t *f) {
-    if (s_as_right_end) s_as_right = s_as_right_end = 0;
+    if (s_as_right_end) s_as_right = s_as_right_end = s_dice_double = 0;
     uint64_t t = now_ms();
     float x = f->nx * 1280.0f, y = f->ny * 720.0f;
     if (f->down & DM_MOUSE_LEFT) {
         int dice = t - s_dice_ms <= DOUBLE_DICE_MS;
         int hand = hand_active();
         int dbl = s_tap.valid && t - s_tap.up_ms <= DOUBLE_GAP_MS && hypotf(x - s_tap.x, y - s_tap.y) <= DOUBLE_RADIUS && (dice || hand);
+        int on_dice = dbl && s_dice_ms >= s_tap.down_ms;
         s_tap.valid = 0;
         s_tap.pressed = !dbl;
         if (dbl) {
             s_as_right = 1;
+            s_dice_double = on_dice;
             static int n_log;
-            if (n_log++ < 40) LOG("[mod touch-ui] double tap at (%.0f,%.0f) on %s: sent as the right button", x, y, dice ? "a speed dice" : "the shown hand");
+            if (n_log++ < 40) LOG("[mod touch-ui] double tap at (%.0f,%.0f) on %s: sent as the right button%s", x, y, on_dice ? "a speed dice" : "the shown hand", on_dice ? ", hidden from the hand so it stays shown" : "");
         } else {
             s_tap.down_ms = t;
             s_tap.x = x;
@@ -486,7 +491,17 @@ static uint32_t button_mask(int button) {
 }
 
 static int host_get_mouse_button(int button) { return (frame_now().held & button_mask(button)) != 0; }
-static int host_get_mouse_button_down(int button) { return (frame_now().down & button_mask(button)) != 0; }
+static int hand_reads_right_button(void *caller) {
+    uint8_t *base = main_base();
+    return base && build_matches() && (uint8_t *)caller == base + K_HAND_RIGHT_READ_RETURN;
+}
+
+static __attribute__((noinline)) int host_get_mouse_button_down(int button) {
+    void *caller = __builtin_return_address(0);
+    dm_mouse_frame_t f = frame_now();
+    if (button == 1 && s_dice_double && hand_reads_right_button(caller)) return 0;
+    return (f.down & button_mask(button)) != 0;
+}
 static int host_get_mouse_button_up(int button) { return (frame_now().up & button_mask(button)) != 0; }
 static int host_get_mouse_present(void) { return 1; }
 
