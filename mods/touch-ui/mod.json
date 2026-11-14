@@ -1,7 +1,7 @@
 {
   "id": "touch-ui",
   "title": "Touch UI",
-  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot and keeps the librarian's hand shown, and anywhere else while the hand is shown it exits the hand, and puts a Leave button, built from the preparation menu's own Leave button, at the bottom center of the reception bookshelf, which has no back button",
+  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot and keeps the librarian's hand shown, and anywhere else while the hand is shown it exits the hand, gives the touch feedback only for a tap that lands on something clickable (a button, toggle, combat page or speed dice), and puts a Leave button, built from the preparation menu's own Leave button, at the bottom center of the reception bookshelf, which has no back button",
   "launcher": {
     "env": "DM_MOD_TOUCHUI",
     "category": "Quality of Life",
@@ -151,6 +151,27 @@
         "offset": "0x257ca00",
         "word": "a9be7bfd",
         "reason": "UIInvitationPanel.Update entry: x0 = the invitation panel; its phase (+0x98) is DropBookSelect while the bookshelf is open, which has no back button; the host builds a Leave button there from the preparation panel's back button and sends a tap on it as the bookshelf's exit (SetPhaseState(Story))"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 17,
+        "offset": "0x28cb470",
+        "word": "aa0103e2",
+        "reason": "EventTrigger.OnPointerClick entry (branches to Execute with PointerClick): x0 = the trigger; when its entries (+0x18, each with its event id at +0x10 and callback at +0x18) include a PointerClick one, the tap clicked something clickable and the host gives the touch feedback"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 18,
+        "offset": "0x24d1800",
+        "word": "a9be7bfd",
+        "reason": "Button.OnPointerClick entry: x0 = the button; when it is interactable (+0xD0) the tap clicked a button and the host gives the touch feedback"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 19,
+        "offset": "0x297d550",
+        "word": "a9be7bfd",
+        "reason": "Toggle.OnPointerClick entry: x0 = the toggle; when it is interactable (+0xD0) the tap clicked a toggle and the host gives the touch feedback"
       }
     ]
   }

@@ -80,7 +80,7 @@ How far the cursor travels for a finger's drag on the touchpad in Touchscreen Mo
 
 ### Touch feedback
 
-A light tap from the phone when you press an on-screen button. In Touchscreen Mode it plays for a click, each scroll step and each key.
+A light tap from the phone when you press an on-screen button. In Touchscreen Mode it plays when a tap lands on something the game treats as clickable (a button, a toggle, a combat page, a speed dice), not for every touch of the screen, and for each scroll step and each key.
 
 ### Hold to confirm + button
 

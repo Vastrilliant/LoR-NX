@@ -86,6 +86,14 @@ static void *s_drag_rect;
 
 static void *ptr_at(void *self, uintptr_t off) { return self ? *(void *const *)((uintptr_t)self + off) : NULL; }
 
+static uint64_t s_press_seq, s_feedback_seq;
+
+static void game_click(void) {
+    if (!mod_enabled() || !dm_touchscreen_mode() || s_feedback_seq == s_press_seq) return;
+    s_feedback_seq = s_press_seq;
+    front_game_clicked();
+}
+
 static void rect_add(void *rect) {
     for (int i = 0; i < s_nrects; i++) if (s_rects[i] == rect) return;
     if (s_nrects < MAX_RECTS) s_rects[s_nrects++] = rect;
@@ -358,6 +366,7 @@ static void page_hover_run(uint64_t *r, int p) {
 }
 
 static void on_page_press(uint64_t *r, int p) {
+    game_click();
     if (!mod_enabled() || !dm_touchscreen_mode() || !main_base()) return;
     static int build_ok = -1;
     if (build_ok < 0) build_ok = strncmp(dm_main_build(), K_BUILD_ID, 32) == 0;
@@ -422,6 +431,7 @@ static void track_double(const dm_mouse_frame_t *f) {
     uint64_t t = now_ms();
     float x = f->nx * 1280.0f, y = f->ny * 720.0f;
     if (f->down & DM_MOUSE_LEFT) {
+        s_press_seq++;
         int dice = t - s_dice_ms <= DOUBLE_DICE_MS;
         int hand = hand_active();
         int dbl = s_tap.valid && t - s_tap.up_ms <= DOUBLE_GAP_MS && hypotf(x - s_tap.x, y - s_tap.y) <= DOUBLE_RADIUS && (dice || hand);
@@ -711,6 +721,7 @@ static void on_hand_update(uint64_t *r) {
 static void on_dice_submit(void) {
     if (!mod_enabled() || !dm_touchscreen_mode()) return;
     s_dice_ms = now_ms();
+    game_click();
 }
 
 #define K_UI_CONTROLLER_GET_INSTANCE 0x16F8D10u
@@ -902,7 +913,41 @@ static void on_inv_update(uint64_t *r, int p) {
     }
 }
 
+#define F_TRIGGER_ENTRIES 0x18u
+#define F_LIST_ITEMS 0x10u
+#define F_LIST_SIZE 0x18u
+#define F_ENTRY_ID 0x10u
+#define F_ENTRY_CALLBACK 0x18u
+#define F_SELECTABLE_INTERACTABLE 0xD0u
+#define TRIGGER_POINTER_CLICK 4
+#define MAX_TRIGGER_ENTRIES 64
+
+static int trigger_has_click(void *trigger) {
+    void *list = ptr_at(trigger, F_TRIGGER_ENTRIES);
+    uint8_t *items = ptr_at(list, F_LIST_ITEMS);
+    if (!list || !items) return 0;
+    int64_t n = *(int32_t *)((uintptr_t)list + F_LIST_SIZE);
+    if (n <= 0 || n > MAX_TRIGGER_ENTRIES || n > *(int64_t *)(items + ARRAY_LENGTH)) return 0;
+    void **entries = (void **)(items + ARRAY_DATA);
+    for (int64_t i = 0; i < n; i++)
+        if (entries[i] && *(int *)((uintptr_t)entries[i] + F_ENTRY_ID) == TRIGGER_POINTER_CLICK && ptr_at(entries[i], F_ENTRY_CALLBACK)) return 1;
+    return 0;
+}
+
+static void on_trigger_click(uint64_t *r) {
+    if (!mod_enabled() || !dm_touchscreen_mode() || !main_base() || !build_matches()) return;
+    if (trigger_has_click((void *)(uintptr_t)r[0])) game_click();
+}
+
+static void on_selectable_click(uint64_t *r) {
+    if (!mod_enabled() || !dm_touchscreen_mode() || !main_base() || !build_matches()) return;
+    uint8_t *self = (uint8_t *)(uintptr_t)r[0];
+    if (self && self[F_SELECTABLE_INTERACTABLE]) game_click();
+}
+
 static void on_icall_resolved(uint64_t *r, int p) {
+    if (p == 17) { on_trigger_click(r); return; }
+    if (p == 18 || p == 19) { on_selectable_click(r); return; }
     if (p == 16) { on_inv_update(r, p); return; }
     if (p == 1) { on_page_press(r, p); return; }
     if (p == 2) { on_cam_late(r, p); return; }

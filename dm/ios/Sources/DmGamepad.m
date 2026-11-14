@@ -497,8 +497,8 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     _padLeft = YES; _lmbEpoch++;
     dm_mouse_button(DM_MOUSE_LEFT, 1);
     _pressTime = CACurrentMediaTime();
-    [_clickFeedback impactOccurredWithIntensity:0.8]; [_clickFeedback prepare];
 }
+- (void)gameClicked { [_clickFeedback impactOccurredWithIntensity:0.8]; [_clickFeedback prepare]; }
 - (void)padRelease {
     _padLeft = NO;
     NSUInteger epoch = ++_lmbEpoch;
@@ -575,7 +575,6 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         if (!_padDrag) {
             if (hypot(c.x - _padStart3.x, c.y - _padStart3.y) <= K_TP_SLOP) return;
             _padDrag = YES; _lmbEpoch++; dm_mouse_button(DM_MOUSE_LEFT, 1);
-            [_clickFeedback impactOccurred]; [_clickFeedback prepare];
             _padLast3 = c; return;
         }
         CGFloat k = 1280.0 / [self picture].size.width * K_TP_GAIN * touchpad_speed();
@@ -778,6 +777,7 @@ static BOOL pads_slotted(GCController *gone) {
     dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = off; self->_controls.hidden = off; self->_gestureView.hidden = off; self->_gestureView.userInteractionEnabled = !off; [self reset]; });   // the touch gamepad hides while any controller is in use
 }
 @end
+void front_game_clicked(void) { dispatch_async(dispatch_get_main_queue(), ^{ [g_view gameClicked]; }); }
 
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
 void dm_gamepad_active(void) { dispatch_async(dispatch_get_main_queue(), ^{ for (GCController *c in GCController.controllers) dm_motion_rearm(c); }); }   // On become active: motion_apple.h

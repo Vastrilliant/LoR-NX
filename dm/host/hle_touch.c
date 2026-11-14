@@ -247,6 +247,7 @@ void dm_key_press(uint32_t usage, int down) {
     pthread_mutex_unlock(&g_ml);
 }
 
+__attribute__((weak)) void front_game_clicked(void) {}
 int dm_touchscreen_mode(void) { return trackpad_on(); }   // for hle_hid.c: the mods' special button is Alt in Touchscreen Mode
 void dm_mouse_frame(uint64_t frame, dm_mouse_frame_t *out) {
     pthread_mutex_lock(&g_ml);
