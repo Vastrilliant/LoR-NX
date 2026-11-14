@@ -15,8 +15,8 @@
 //   Each physical controller is a player of its own (local co-op), as on the Mac: the first one connected is player 1, together with the touch gamepad, the next player 2, and so on up to 8; see "Physical controllers" below.
 //   Touchscreen Mode (DM_TOUCHSCREEN=1) replaces all of it: the screen is a touchpad for the game's mouse (tsBegan below: one finger drags the cursor, a tap is the left button, a hold presses the left button until the finger lifts, three fingers swiping hold the left button, two fingers moving up or down scroll the wheel and pinching zooms it;
 //     (Pointer Mode Touch, DM_POINTER_MODE=touch, puts the cursor under the finger instead: touch down = left button down, lift = left button up, moving in between drags; the touch-ui mod then hides the game's own cursor)
-//     the app draws no cursor: the game's own is moved by the mouse; the left click reaches the game as a touch-screen press at the cursor, since the touch-ui mod makes the game read the touch screen: hle_touch.c trackpad_touch) and Esc and Alt are the keyboard's keys (front.h dm_mouse_*, dm_key_modifier, dm_key_press), drawn as the textures TouchKeyEsc.png and TouchKeyAlt.png (Resources, bundled by project.yml), each pinned to a screen corner and not movable: Esc at the top left, Alt (the texture mirrored) at the bottom left, each as wide as the bar the 16:9 picture leaves at that side of the screen
-//     so neither reaches into the picture. Clicks, scroll steps and the keys give a haptic tap while DM_TOUCH_HAPTICS is on.
+//     the app draws no cursor: the game's own is moved by the mouse; the left click reaches the game as a touch-screen press at the cursor, since the touch-ui mod makes the game read the touch screen: hle_touch.c trackpad_touch) and Esc and Alt are the keyboard's keys (front.h dm_mouse_*, dm_key_modifier, dm_key_press), drawn as the textures TouchKeyEsc.png and TouchKeyAlt.png (Resources, bundled by project.yml), each pinned to a screen corner and not movable: Esc at the top left, Alt (the texture mirrored) at the bottom left, each a fixed K_KB_W wide; the part of a key over the picture is click-through (the touch goes to the touchpad) and drawn with the overlay blend mode, only the part in the bar beside the picture takes the press
+//     Clicks, scroll steps and the keys give a haptic tap while DM_TOUCH_HAPTICS is on.
 //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
@@ -149,7 +149,7 @@ static const CGFloat
     K_TP_SLOP = 9,                                  // a finger that stays within this many points of where it landed has not moved (a tap, or a hold)
     K_TP_STEP = 26,                                 // two fingers travelling this many points up or down scroll the wheel one notch
     K_TP_PINCH = 24,                                // two fingers moving this many points apart (together) zoom one notch in (out): the wheel, up when they spread
-    K_KB_MIN_W = 64,                                // a key texture is as wide as the bar beside the picture, but at least this wide (u) on a screen that has no bar
+    K_KB_W = 160,                                   // a key texture is this wide (u), whatever the bar beside the picture measures; the part over the picture is click-through and drawn with the overlay blend mode
     K_KB_HIT = 44;                                  // a key is at least this big to hit, however small it is drawn
 static const float K_KB_IDLE = 0.85f;               // a key texture's opacity while no finger is on it (1 while one is)
 static const NSTimeInterval K_TP_HOLD = 0.45;       // Trackpad pointer mode: a finger held still this long presses the left button until it lifts
@@ -191,7 +191,8 @@ static void pads_start(void);   // Physical controllers, below
     BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
     CALayer *_tsLayer;                             // Touchscreen Mode's layer (the keys), over the picture; hidden otherwise
-    CALayer *_kbKey[TS_N];                         // one texture layer per key
+    CALayer *_kbKey[TS_N];                         // one texture layer per key: the part outside the picture, drawn normally
+    CALayer *_kbOver[TS_N];                        // the same texture over the picture, drawn with the overlay blend mode
     CGFloat _kbAspect[TS_N];                       // each texture's height over its width
     UITouch *_kbTouch[TS_N];                       // the finger holding each key
     CGRect _kbFrame[TS_N];                         // where each key is now, as of the last layout pass
@@ -264,13 +265,17 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         for (int i = 0; i < TS_N; i++) {
             NSString *path = [NSBundle.mainBundle pathForResource:k_tsImages[i] ofType:@"png"];
             UIImage *image = path ? [UIImage imageWithContentsOfFile:path] : nil;
-            _kbKey[i] = [CALayer layer];
-            _kbKey[i].contents = (__bridge id)image.CGImage;
-            _kbKey[i].contentsGravity = kCAGravityResize;
-            _kbKey[i].minificationFilter = kCAFilterTrilinear;
-            _kbKey[i].magnificationFilter = kCAFilterLinear;
+            _kbKey[i] = [CALayer layer]; _kbOver[i] = [CALayer layer];
+            for (CALayer *l in @[_kbKey[i], _kbOver[i]]) {
+                l.contents = (__bridge id)image.CGImage;
+                l.contentsGravity = kCAGravityResize;
+                l.minificationFilter = kCAFilterTrilinear;
+                l.magnificationFilter = kCAFilterLinear;
+                l.mask = [CAShapeLayer layer];
+                [_tsLayer addSublayer:l];
+            }
+            _kbOver[i].compositingFilter = @"overlayBlendMode";
             _kbAspect[i] = image && image.size.width > 0 ? image.size.height / image.size.width : 0.35;
-            [_tsLayer addSublayer:_kbKey[i]];
         }
         _gesture = YES;
         [self applyLayout];
@@ -467,19 +472,45 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 - (CGRect)kbRect:(int)i { return _kbFrame[i]; }
 - (CGRect)tsKeyFrame:(int)i {
     CGRect b = self.bounds;
-    CGFloat w = MAX([self picture].origin.x, K_KB_MIN_W * self.u), h = w * _kbAspect[i];
+    CGFloat w = K_KB_W * self.u, h = w * _kbAspect[i];
     return CGRectMake(0, i == TS_ESC ? 0 : b.size.height - h, w, h);
 }
+- (BOOL)kbSolid:(int)i {   // the key is only click-through over the picture when enough of it lies outside the picture to be hit there; with no bar beside the picture the whole key is solid
+    CGRect r = CGRectIntersection([self kbRect:i], self.bounds), pic = [self picture];
+    CGRect out = r.origin.x < pic.origin.x ? CGRectMake(r.origin.x, r.origin.y, MIN(pic.origin.x, CGRectGetMaxX(r)) - r.origin.x, r.size.height) : CGRectNull;
+    CGRect outV = r.origin.y < pic.origin.y ? CGRectMake(r.origin.x, r.origin.y, r.size.width, MIN(pic.origin.y, CGRectGetMaxY(r)) - r.origin.y) : CGRectNull;
+    CGRect outB = CGRectGetMaxY(r) > CGRectGetMaxY(pic) ? CGRectMake(r.origin.x, MAX(CGRectGetMaxY(pic), r.origin.y), r.size.width, CGRectGetMaxY(r) - MAX(CGRectGetMaxY(pic), r.origin.y)) : CGRectNull;
+    for (NSValue *v in @[[NSValue valueWithCGRect:out], [NSValue valueWithCGRect:outV], [NSValue valueWithCGRect:outB]]) {
+        CGRect o = v.CGRectValue; if (!CGRectIsNull(o) && o.size.width >= K_KB_HIT && o.size.height >= K_KB_HIT) return NO;
+    }
+    return YES; }
 - (int)kbAt:(CGPoint)p {
+    CGRect pic = [self picture];
     for (int i = 0; i < TS_N; i++) {
         CGRect r = [self kbRect:i];
         r = CGRectInset(r, -MAX(K_KB_HIT - r.size.width, 0) / 2, -MAX(K_KB_HIT - r.size.height, 0) / 2);
-        if (CGRectContainsPoint(r, p)) return i;
+        if (!CGRectContainsPoint(r, p)) continue;
+        if (CGRectContainsPoint(pic, p) && ![self kbSolid:i]) continue;   // over the picture the touch goes through to the touchpad
+        return i;
     }
     return -1; }
+- (void)kbLayout:(int)i {   // places a key's two layers and masks each to its side of the picture's edge
+    CGRect r = _kbFrame[i], pic = [self picture];
+    CGRect in = CGRectIntersection(r, pic);
+    BOOL solid = [self kbSolid:i];
+    _kbKey[i].frame = _kbOver[i].frame = r;
+    CGRect local = CGRectOffset(in, -r.origin.x, -r.origin.y);
+    CGMutablePathRef outside = CGPathCreateMutable(), inside = CGPathCreateMutable();
+    CGPathAddRect(outside, NULL, CGRectMake(0, 0, r.size.width, r.size.height));
+    if (!solid && !CGRectIsNull(in)) { CGPathAddRect(outside, NULL, local); CGPathAddRect(inside, NULL, local); }
+    CAShapeLayer *mo = (CAShapeLayer *)_kbKey[i].mask, *mi = (CAShapeLayer *)_kbOver[i].mask;
+    mo.frame = mi.frame = CGRectMake(0, 0, r.size.width, r.size.height);
+    mo.fillRule = kCAFillRuleEvenOdd; mo.path = outside; mi.path = inside;
+    CGPathRelease(outside); CGPathRelease(inside);
+}
 - (void)refreshKeys {
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    for (int i = 0; i < TS_N; i++) _kbKey[i].opacity = _kbTouch[i] != nil ? 1.0f : K_KB_IDLE;
+    for (int i = 0; i < TS_N; i++) _kbKey[i].opacity = _kbOver[i].opacity = _kbTouch[i] != nil ? 1.0f : K_KB_IDLE;
     [CATransaction commit];
 }
 - (CGRect)picture {   // the 16:9 picture that front_ios.m centres in the screen, as pushGame maps touches onto it
@@ -668,7 +699,7 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     _controls.frame = self.layer.bounds;
     _tsLayer.frame = self.layer.bounds;
-    for (int i = 0; i < TS_N; i++) _kbKey[i].frame = _kbFrame[i] = [self tsKeyFrame:i];
+    for (int i = 0; i < TS_N; i++) { _kbFrame[i] = [self tsKeyFrame:i]; [self kbLayout:i]; }
     for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * u); }
     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
         if (isDrop(b)) {
