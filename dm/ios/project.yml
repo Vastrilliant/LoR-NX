@@ -18,6 +18,10 @@ targets:
         buildPhase: resources
       - path: Resources/LauncherBGM.m4a   # the launcher's looping music, the first 1:30 of the track (LauncherAudio.swift)
         buildPhase: resources
+      - path: Resources/TouchKeyEsc.png
+        buildPhase: resources
+      - path: Resources/TouchKeyAlt.png
+        buildPhase: resources
       - path: Resources/LauncherDiceRoll.wav   # the sound Play makes as the music stops (LauncherAudio.swift)
         buildPhase: resources
       - path: Gen/embed.S

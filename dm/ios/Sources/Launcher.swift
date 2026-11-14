@@ -119,8 +119,8 @@ private struct LauncherView: View {
     private let increasedLimit = dm_has_increased_memory_entitlement()   // fixed for the life of the process
     private let donorEmbedded = dm_ram_donor_embedded()
     private static let memorySection = "Memory"
-    private enum LayoutEditor: String, Identifiable {   // the layout editor on screen: the swipe gamepad's or Touchscreen Mode's keys
-        case swipe, touchscreen
+    private enum LayoutEditor: String, Identifiable {   // the layout editor on screen: the swipe gamepad's
+        case swipe
         var id: String { rawValue }
     }
     @State private var layoutEditor: LayoutEditor?
@@ -140,19 +140,8 @@ private struct LauncherView: View {
         }
     }
 
-    // Opens the layout editor of Touchscreen Mode's keys (TouchscreenLayoutEditor.swift). The keys exist only in that mode, so the button is not drawn while it is off
-    private var touchscreenEditorButton: some View {
-        Button { layoutEditor = .touchscreen } label: {
-            HStack {
-                Label("Edit touchscreen layout", systemImage: "keyboard")
-                Spacer()
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
-            }
-        }
-    }
-
     @ViewBuilder private var layoutEditorButtons: some View {
-        if m.values["DM_TOUCHSCREEN"] == "1" { touchscreenEditorButton } else { swipeEditorButton }
+        if m.values["DM_TOUCHSCREEN"] != "1" { swipeEditorButton }
     }
 
     // The Mods section is one button: the mods themselves, grouped by category, are on the page it opens (ModsBrowserPage)
@@ -279,7 +268,6 @@ private struct LauncherView: View {
         .fullScreenCover(item: $layoutEditor) { editor in
             switch editor {
             case .swipe: GestureLayoutEditorView(dedicatedB: m.values["DM_DEDICATED_B"] == "1")
-            case .touchscreen: TouchscreenLayoutEditorView()
             }
         }
         .fullScreenCover(isPresented: $savesOpen) {
