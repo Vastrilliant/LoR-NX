@@ -30,6 +30,7 @@ DM_POINTER_MODE	choice	trackpad=Trackpad,touch=Touch	trackpad	platform:ios	Contr
 DM_TRACKPAD_SPEED	range	0.5:3.0:0.1	1.0	platform:ios	Controls	Cursor sensitivity		needs=DM_TOUCHSCREEN=1;unless=DM_POINTER_MODE=touch
 DM_HOLD_PLUS	toggle	-	0	platform:ios	Controls	Hold to confirm + button	The **+** button, used to confirm stageplays, burning books, combat phases & other important actions, will only activate if held.	unless=DM_TOUCHSCREEN=1
 DM_DEDICATED_B	toggle	-	0	platform:ios	Controls	Dedicated B button	Adds the B button to the controller scheme rather than using the hold-to-back out gesture.	unless=DM_TOUCHSCREEN=1
+DM_STYLIZED_CONTROLS	toggle	-	0	platform:ios	Controls	Stylized controls	Draws the swipe controls' buttons in the game's own style.	unless=DM_TOUCHSCREEN=1
 DM_PRESENT_SNAP	toggle	-	DM_GAME_PRESENT_SNAP	gfxapi:nvn	Performance	Frame buffering	Up to one frame more display latency.
 DM_PSO_MTL4	toggle	-	DM_GAME_PSO_MTL4|1	gfxapi:nvn	Performance	Metal 4 pipelines	Keeps a pipeline archive; uses more memory.
 DM_PSO_PREBUILD	toggle	-	1	gfxapi:nvn	Performance	Pipeline prebuild	The first start waits a few minutes for it, once.	needs=DM_PSO_MTL4=1

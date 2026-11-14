@@ -4,7 +4,7 @@ The screen before the game starts shows the settings the game supports. A settin
 
 - [Tested defaults](#tested-defaults)
 - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [ASTCENC Transcode Quality](#astcenc-transcode-quality), [Game language](#game-language), [Frame-rate counter](#frame-rate-counter)
-- [Controls](#controls): [Touchscreen Mode](#touchscreen-mode), [Pointer Mode](#pointer-mode), [Cursor sensitivity](#cursor-sensitivity), [Touch feedback](#touch-feedback), [Hold to confirm + button](#hold-to-confirm--button), [Dedicated B button](#dedicated-b-button)
+- [Controls](#controls): [Touchscreen Mode](#touchscreen-mode), [Pointer Mode](#pointer-mode), [Cursor sensitivity](#cursor-sensitivity), [Touch feedback](#touch-feedback), [Hold to confirm + button](#hold-to-confirm--button), [Dedicated B button](#dedicated-b-button), [Stylized controls](#stylized-controls)
 - [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Disable MSAA](#disable-msaa), [Tile-based pass optimizations](#tile-based-pass-optimizations), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
 - [Memory](#memory): [Extend Memory Usage](#extend-memory-usage), [Reallocate Minimum](#reallocate-minimum)
 - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
@@ -89,6 +89,10 @@ The **+** button, used to confirm stageplays, burning books, combat phases and o
 ### Dedicated B button
 
 Adds the **B** button to the controller scheme, left of **X**, rather than using the hold-to-back-out gesture: with it on, a finger that stays down on the screen no longer presses **B**. A tap is still **A**. Off by default. Its place and size can be changed in the layout editor, which shows the button only while this setting is on.
+
+### Stylized controls
+
+Draws the swipe controls' buttons (**L**, **R**, **ZL**, **ZR**, **X**, **Y**, **B** with Dedicated B button, **−**, **+**, **L3**, **R3**, the right stick and the swipe lock) as the game's own style of button, an ink-washed hexagon or bar with gold lettering, instead of the plain outlines. Each button has two pictures: the darker lettering while it is up and the brighter lettering while a finger holds it; the swipe lock shows the closed padlock while it is locked and the open one while it is open, and with Hold to confirm + button the **+** button's brighter picture fills in from the left as you hold it. Only the look changes: the buttons keep their places, hit areas and presses, and the layout editor shows them in this style while the setting is on. Shown only while Touchscreen Mode is off, since the touchscreen layout has no swipe buttons. Off by default.
 
 ## Memory
 
@@ -269,6 +273,7 @@ A line like `DM_PRESENT_SNAP=0` in `Documents/env.txt` (in the Files app, under 
 | Touch feedback | `DM_TOUCH_HAPTICS` | `1`, `0` |
 | Hold to confirm + button | `DM_HOLD_PLUS` | `1`, `0` |
 | Dedicated B button | `DM_DEDICATED_B` | `1`, `0` |
+| Stylized controls | `DM_STYLIZED_CONTROLS` | `1`, `0` |
 | Upscaling | `DM_PRESENT_UPSCALE` | `off`, `metalfx` |
 | ASTCENC Transcode Quality | `DM_NVN_BC_ASTC_QUALITY` | `fast`, `medium`, `thorough`, `verythorough`, `exhaustive` |
 | Frame buffering | `DM_PRESENT_SNAP` | `1`, `0` |

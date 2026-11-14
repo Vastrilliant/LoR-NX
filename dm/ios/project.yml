@@ -22,6 +22,9 @@ targets:
         buildPhase: resources
       - path: Resources/TouchKeyAlt.png
         buildPhase: resources
+      - path: Resources/StylizedControls   # the swipe pad's game-styled button textures, default and held (GesturePad.swift, setting Stylized controls)
+        type: folder
+        buildPhase: resources
       - path: Resources/LauncherDiceRoll.wav   # the sound Play makes as the music stops (LauncherAudio.swift)
         buildPhase: resources
       - path: Gen/embed.S

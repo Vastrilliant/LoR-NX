@@ -13,6 +13,10 @@
 //    - Right stick     a scroller: while a finger holds it, moving that finger up or down tilts the right stick, and swipes made elsewhere with another finger move the stick instead of the D-pad
 //    - Swipe lock      toggle. Locked = one D-pad press per swipe, unlocked = several presses per swipe
 //
+// Stylized controls (DM_STYLIZED_CONTROLS, a launcher setting shown only while Touchscreen Mode is off): the buttons are drawn as the game-styled textures of
+// Resources/StylizedControls (one pair per button: the darker-text default and the brighter-text held state, plus the closed / open padlock of the swipe lock)
+// instead of the outline style. Only the look changes: positions, hit areas and presses are the same.
+//
 // Button positions, sizes and opacity are edited in GestureLayoutEditor.swift (Launcher > Controls > Edit swipe layout) and kept in UserDefaults.
 // Presses reach the host through dm_gesture_button / dm_gesture_stick (DmGamepad.m), which publish them next to the other touch controls.
 import SwiftUI
@@ -53,6 +57,33 @@ enum GestureControlID: String, CaseIterable, Codable {
         case .l3: return "L3"
         case .r3: return "R3"
         }
+    }
+}
+
+extension GestureControlID {
+    /// The stylized textures (Resources/StylizedControls/<name>.png): the default one and the one drawn while the control is held. The swipe lock's pair is the closed
+    /// padlock (swipes are locked to one press) and the open one (the lock is open).
+    var artNames: (normal: String, held: String) {
+        switch self {
+        case .lock: return ("lock", "unlock")
+        default: return (rawValue, rawValue + "_held")
+        }
+    }
+}
+
+/// Loads the stylized textures once. They sit in the StylizedControls folder of the bundle (project.yml), so they are read by path rather than by UIImage(named:).
+enum StylizedArt {
+    private static var cache: [String: UIImage] = [:]
+    static let folder = "StylizedControls"
+    /// Texture sizes in pixels: the hexagons are square, the pills 264 x 112 (the width the sprite sheet's pills have, in a canvas 112 tall).
+    static let pillAspect: CGFloat = 112.0 / 264.0
+
+    static func image(_ name: String) -> UIImage? {
+        if let hit = cache[name] { return hit }
+        guard let path = Bundle.main.path(forResource: name, ofType: "png", inDirectory: folder),
+              let image = UIImage(contentsOfFile: path) else { return nil }
+        cache[name] = image
+        return image
     }
 }
 
@@ -154,9 +185,10 @@ final class GestureLayoutEditorModel: ObservableObject {
 struct GestureControllerView: UIViewRepresentable {
     let editorModel: GestureLayoutEditorModel
     let dedicatedB: Bool
+    let stylized: Bool
 
     func makeUIView(context: Context) -> GestureControllerUIView {
-        let view = GestureControllerUIView(editing: true, dedicatedB: dedicatedB)
+        let view = GestureControllerUIView(editing: true, dedicatedB: dedicatedB, stylized: stylized)
         let model = editorModel
 
         model.view = view
@@ -274,6 +306,9 @@ final class GestureControllerUIView: UIView {
     /// The B button is a control of its own and the touch-and-hold gesture is off. The editor passes the launcher's current choice, as the environment is not set yet there.
     private let dedicatedB: Bool
 
+    /// The buttons are drawn as the game-styled textures. The editor passes the launcher's current choice, as the environment is not set yet there.
+    private let stylized: Bool
+
     // MARK: Controls
 
     private enum Kind: Equatable {
@@ -286,6 +321,12 @@ final class GestureControllerUIView: UIView {
         let id: GestureControlID
         let kind: Kind
         let isCircle: Bool
+        private let stylized: Bool
+        /// Stylized: the default texture, and the held one drawn over it.
+        private let art = UIImageView()
+        private let heldArt = UIImageView()
+        /// Stylized + button with hold to confirm: the held texture is revealed from the left by fillLayer (its mask) while the press builds up, instead of switching at once.
+        private let revealsHeld: Bool
         private let label = UILabel()
         private let icon = UIImageView()
         private let symbol: String?
@@ -295,29 +336,50 @@ final class GestureControllerUIView: UIView {
 
         var isActive = false { didSet { refresh() } }
 
-        init(id: GestureControlID, kind: Kind, title: String, circle: Bool, symbol: String? = nil, activeSymbol: String? = nil) {
+        init(id: GestureControlID, kind: Kind, title: String, circle: Bool, symbol: String? = nil, activeSymbol: String? = nil, stylized: Bool = false, revealsHeld: Bool = false) {
             self.id = id
             self.kind = kind
             self.isCircle = circle
+            self.stylized = stylized
+            self.revealsHeld = stylized && revealsHeld
             self.symbol = symbol
             self.activeSymbol = activeSymbol
             super.init(frame: .zero)
 
             isUserInteractionEnabled = false
-            layer.borderWidth = 1
-            layer.masksToBounds = true
 
-            fillLayer.backgroundColor = UIColor.white.withAlphaComponent(0.4).cgColor
             fillLayer.anchorPoint = CGPoint(x: 0, y: 0.5)
             fillLayer.transform = Self.emptyFill
-            layer.insertSublayer(fillLayer, at: 0)
+
+            if stylized {
+                // The textures run past the control's bounds (their glow and ink splashes), so nothing is clipped and there is no outline.
+                let names = id.artNames
+                art.image = StylizedArt.image(names.normal)
+                heldArt.image = StylizedArt.image(names.held)
+                for view in [art, heldArt] {
+                    view.contentMode = .scaleToFill
+                    view.isUserInteractionEnabled = false
+                    addSubview(view)
+                }
+                if self.revealsHeld {
+                    fillLayer.backgroundColor = UIColor.white.cgColor   // a mask: opaque where the held texture shows
+                    heldArt.layer.mask = fillLayer
+                }
+            } else {
+                layer.borderWidth = 1
+                layer.masksToBounds = true
+                fillLayer.backgroundColor = UIColor.white.withAlphaComponent(0.4).cgColor
+                layer.insertSublayer(fillLayer, at: 0)
+            }
 
             label.text = title
             label.textColor = .white
             label.textAlignment = .center
             addSubview(label)
 
-            if symbol != nil {
+            if stylized {
+                label.isHidden = true
+            } else if symbol != nil {
                 icon.tintColor = .white
                 icon.contentMode = .scaleAspectFit
                 addSubview(icon)
@@ -332,10 +394,27 @@ final class GestureControllerUIView: UIView {
         override func layoutSubviews() {
             super.layoutSubviews()
             layer.cornerRadius = isCircle ? min(bounds.width, bounds.height) / 2 : bounds.height / 2
+
+            // Stylized: the texture is centred on the control and a little larger than it, as the artwork has a soft edge around the shape that counts as the control.
+            var fillSize = bounds.size
+            if stylized {
+                let artSize: CGSize
+                if isCircle {
+                    artSize = CGSize(width: bounds.width * Self.hexArtScale, height: bounds.width * Self.hexArtScale)
+                } else {
+                    let width = bounds.width * Self.pillArtScale
+                    artSize = CGSize(width: width, height: width * StylizedArt.pillAspect)
+                }
+                let frame = CGRect(x: bounds.midX - artSize.width / 2, y: bounds.midY - artSize.height / 2, width: artSize.width, height: artSize.height)
+                art.frame = frame
+                heldArt.frame = frame
+                fillSize = frame.size
+            }
+
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            fillLayer.bounds = CGRect(origin: .zero, size: bounds.size)
-            fillLayer.position = CGPoint(x: 0, y: bounds.midY)
+            fillLayer.bounds = CGRect(origin: .zero, size: fillSize)
+            fillLayer.position = CGPoint(x: 0, y: fillSize.height / 2)
             CATransaction.commit()
             label.frame = bounds
             label.font = .systemFont(ofSize: max(11, min(bounds.height * 0.4, 24)), weight: .medium)
@@ -343,6 +422,11 @@ final class GestureControllerUIView: UIView {
         }
 
         private static let emptyFill = CATransform3DMakeScale(0.0001, 1, 1)
+        /// How much larger than the control the stylized texture is drawn: the hexagon's body fills about four fifths of its square, a pill's about nine tenths of its width.
+        static let hexArtScale: CGFloat = 1.25
+        static let pillArtScale: CGFloat = 1.1
+        /// A stylized pill is this tall for its width: the proportions of the drawn shape, so the control's bounds (hit area, selection ring) match it.
+        static let pillBodyAspect: CGFloat = 0.32
 
         /// Fills the control from empty to full in `duration`, evenly.
         func startFill(duration: TimeInterval) {
@@ -380,6 +464,11 @@ final class GestureControllerUIView: UIView {
         }
 
         private func refresh() {
+            if stylized {
+                // The held texture replaces the default one. With hold to confirm the + button's is revealed by the fill instead, so it stays in place.
+                if !revealsHeld { heldArt.alpha = isActive ? 1 : 0 }
+                return
+            }
             // Outline only: almost no fill until pressed.
             backgroundColor = UIColor.white.withAlphaComponent(isActive ? 0.30 : 0.04)
             layer.borderColor = UIColor.white.withAlphaComponent(isActive ? 0.95 : 0.42).cgColor
@@ -398,24 +487,29 @@ final class GestureControllerUIView: UIView {
 
     fileprivate(set) var layout: GestureLayout
 
-    private let lockControl = ControlView(id: .lock, kind: .swipeLockToggle, title: "", circle: true, symbol: "lock", activeSymbol: "lock.open")
+    private lazy var lockControl = ControlView(id: .lock, kind: .swipeLockToggle, title: "", circle: true, symbol: "lock", activeSymbol: "lock.open", stylized: stylized)
 
     private lazy var controls: [ControlView] = {
+        let styled = self.stylized
+        func make(_ id: GestureControlID, _ kind: Kind, _ title: String, circle: Bool, symbol: String? = nil, activeSymbol: String? = nil) -> ControlView {
+            ControlView(id: id, kind: kind, title: title, circle: circle, symbol: symbol, activeSymbol: activeSymbol, stylized: styled,
+                        revealsHeld: id == .plus && self.holdPlusOn)
+        }
         var list = [
-            ControlView(id: .l, kind: .button(.leftShoulder), title: "L", circle: false),
-            ControlView(id: .r, kind: .button(.rightShoulder), title: "R", circle: false),
-            ControlView(id: .zl, kind: .button(.leftTrigger), title: "ZL", circle: false),
-            ControlView(id: .zr, kind: .button(.rightTrigger), title: "ZR", circle: false),
-            ControlView(id: .x, kind: .button(.x), title: "X", circle: true),
-            ControlView(id: .y, kind: .button(.y), title: "Y", circle: true),
-            ControlView(id: .minus, kind: .button(.minus), title: "−", circle: false),
-            ControlView(id: .plus, kind: .button(.plus), title: "+", circle: false),
-            ControlView(id: .l3, kind: .button(.leftStick), title: "L3", circle: true),
-            ControlView(id: .r3, kind: .button(.rightStick), title: "R3", circle: true),
-            ControlView(id: .stick, kind: .stickScroll, title: "RS", circle: true, symbol: "r.joystick"),
+            make(.l, .button(.leftShoulder), "L", circle: false),
+            make(.r, .button(.rightShoulder), "R", circle: false),
+            make(.zl, .button(.leftTrigger), "ZL", circle: false),
+            make(.zr, .button(.rightTrigger), "ZR", circle: false),
+            make(.x, .button(.x), "X", circle: true),
+            make(.y, .button(.y), "Y", circle: true),
+            make(.minus, .button(.minus), "−", circle: false),
+            make(.plus, .button(.plus), "+", circle: false),
+            make(.l3, .button(.leftStick), "L3", circle: true),
+            make(.r3, .button(.rightStick), "R3", circle: true),
+            make(.stick, .stickScroll, "RS", circle: true, symbol: "r.joystick"),
             lockControl
         ]
-        if self.dedicatedB { list.append(ControlView(id: .b, kind: .button(.b), title: "B", circle: true)) }
+        if self.dedicatedB { list.append(make(.b, .button(.b), "B", circle: true)) }
         return list
     }()
 
@@ -488,7 +582,7 @@ final class GestureControllerUIView: UIView {
 
     // MARK: Init
 
-    init(editing: Bool, dedicatedB: Bool? = nil) {
+    init(editing: Bool, dedicatedB: Bool? = nil, stylized: Bool? = nil) {
         self.layout = GestureLayoutStore.load()
         self.isEditing = editing
         if let dedicatedB {
@@ -497,6 +591,13 @@ final class GestureControllerUIView: UIView {
             self.dedicatedB = atoi(value) != 0
         } else {
             self.dedicatedB = false
+        }
+        if let stylized {
+            self.stylized = stylized
+        } else if let value = getenv("DM_STYLIZED_CONTROLS") {
+            self.stylized = atoi(value) != 0
+        } else {
+            self.stylized = false
         }
         super.init(frame: .zero)
 
@@ -554,7 +655,9 @@ final class GestureControllerUIView: UIView {
         for control in controls {
             let item = layout.effective(control.id)
             let base = control.isCircle ? circleSize : pillSize
-            let size = CGSize(width: base.width * item.scale, height: base.height * item.scale)
+            var size = CGSize(width: base.width * item.scale, height: base.height * item.scale)
+            // A stylized pill has the drawn shape's proportions, so its bounds (hit area, selection ring) match the texture.
+            if stylized, !control.isCircle { size.height = size.width * ControlView.pillBodyAspect }
 
             control.alpha = min(max(item.opacity ?? 1, 0.05), 1)
 

@@ -267,7 +267,7 @@ private struct LauncherView: View {
         }
         .fullScreenCover(item: $layoutEditor) { editor in
             switch editor {
-            case .swipe: GestureLayoutEditorView(dedicatedB: m.values["DM_DEDICATED_B"] == "1")
+            case .swipe: GestureLayoutEditorView(dedicatedB: m.values["DM_DEDICATED_B"] == "1", stylized: m.values["DM_STYLIZED_CONTROLS"] == "1")
             }
         }
         .fullScreenCover(isPresented: $savesOpen) {

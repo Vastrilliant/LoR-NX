@@ -8,18 +8,21 @@ struct GestureLayoutEditorView: View {
     @StateObject private var model = GestureLayoutEditorModel()
     /// The launcher's current "Dedicated B button" choice: the B control is placed only while it is on.
     let dedicatedB: Bool
+    /// The launcher's current "Stylized controls" choice: the controls are previewed as the game-styled textures while it is on.
+    let stylized: Bool
 
     @State private var panelAtTop = true
 
-    init(dedicatedB: Bool) {
+    init(dedicatedB: Bool, stylized: Bool = false) {
         self.dedicatedB = dedicatedB
+        self.stylized = stylized
     }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            GestureControllerView(editorModel: model, dedicatedB: dedicatedB)
+            GestureControllerView(editorModel: model, dedicatedB: dedicatedB, stylized: stylized)
                 .ignoresSafeArea()
 
             VStack {
