@@ -345,10 +345,13 @@ static void push_engine_position(float x, float y) {
 #define K_CARD_SHOW_DETAIL 0x1FD6D10u
 #define F_CARD_ENTERED 0x133u
 
+extern int (*dm_press_owner)(void *card, void *event);
+
 static void *s_press_card;
 
 static void page_hover_run(uint64_t *r, int p) {
-    (void)r; (void)p;
+    (void)p;
+    if (dm_press_owner && dm_press_owner(s_press_card, (void *)(uintptr_t)r[1])) return;
     static int logged;
     ((void (*)(void *, void *))(main_base() + K_CARD_SHOW_DETAIL))(s_press_card, NULL);
     if (logged++ < 5) LOG("[mod touch-ui] combat page %p pressed before its hover: ShowDetail run first", s_press_card);

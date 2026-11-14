@@ -46,6 +46,8 @@ static void run_on_guest_stack(void *p) {
 
 static __thread int g_in_mod;
 
+int (*dm_press_owner)(void *card, void *event);
+
 void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int)) {
     if (g_in_mod) return;
     int k = -1;

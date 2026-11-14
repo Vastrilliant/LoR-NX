@@ -14,6 +14,7 @@
 #include "hle_mods_gen.h"
 
 void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
+extern int (*dm_press_owner)(void *card, void *event);
 
 #define K_RECT_GET_SIZEDELTA 0x19BA760u         // RectTransform.get_sizeDelta
 #define K_TRANSFORM_SET_LOCALPOS 0x19BAC70u
@@ -518,9 +519,18 @@ static void on_click_state(uint64_t *r, int p) {
     s_swallow = NULL;
     r[0] = 0;
 }
+static int press_owner(void *card, void *ev) {
+    if (!mod_enabled() || !swap_on() || !main_base() || !card || !ev || !s_hand) return 0;
+    if (field(s_hand, F_HAND_SELECTED) != card) return 0;
+    if (FN(K_INPUT_TYPE, int, void *, const void *)(ev, NULL) == INPUT_PAD) return 0;
+    if (*(const int *)((uintptr_t)ev + F_EVENT_BUTTON) != 0) return 0;
+    return card_in_hand(s_hand, card);
+}
+
 static void on_info_alpha(uint64_t *r, int p) { if (mod_enabled()) dm_mod_gate_run(r, p, info_run); }
 
 __attribute__((constructor)) static void mod_enhanced_combat_page_view_attach(void) {
+    dm_press_owner = press_owner;
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_UPDATE_PRE, on_update_pre);
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_SWAP_PRESS, on_swap_press);
     gate_obs_set(MODGATE_ENHANCED_COMBAT_PAGE_VIEW_APPLY_PRE, on_apply_pre);
