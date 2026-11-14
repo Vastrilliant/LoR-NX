@@ -124,6 +124,7 @@ private struct LauncherView: View {
         var id: String { rawValue }
     }
     @State private var layoutEditor: LayoutEditor?
+    @State private var savesOpen = false
     @State private var modPage: [String] = []   // the pages pushed on the list: the mods page (modsPage) and a mod's settings page (its env): the navigation stack's path
     private static let modsPage = "mods"   // not a DM_ name, so never a mod's env
 
@@ -162,6 +163,18 @@ private struct LauncherView: View {
                     Text("Browse mods")
                     Spacer()
                     if m.modsOn > 0 { Text("\(m.modsOn) on").foregroundStyle(.secondary) }
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private var savesSection: some View {
+        Section("Saves") {
+            Button { savesOpen = true } label: {
+                HStack {
+                    Text("Manage saves")
+                    Spacer()
                     Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                 }
             }
@@ -242,6 +255,7 @@ private struct LauncherView: View {
                         if m.rows(in: "Controls").isEmpty {   // a game with no controls settings still gets the editor
                             Section("Controls") { layoutEditorButtons }
                         }
+                        savesSection
                         Section {
                             Button("Reset to tested defaults") { m.reset() }
                                 .disabled(!m.changed)
@@ -267,6 +281,9 @@ private struct LauncherView: View {
             case .swipe: GestureLayoutEditorView(dedicatedB: m.values["DM_DEDICATED_B"] == "1")
             case .touchscreen: TouchscreenLayoutEditorView()
             }
+        }
+        .fullScreenCover(isPresented: $savesOpen) {
+            SaveSlotsPage { savesOpen = false }
         }
         .preferredColorScheme(.dark)
         .onAppear { audio.startMusic() }
