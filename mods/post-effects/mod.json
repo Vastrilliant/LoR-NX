@@ -48,6 +48,18 @@
         ["25", "Background + character + effect cameras"],
         ["31", "All five cameras"]
       ]
+    },
+    {
+      "env": "DM_POSTFX_RADIUS_CAP",
+      "kind": "choice",
+      "label": "Bloom Quality",
+      "note": "A lower bloom radius runs fewer blur passes and glows less wide.",
+      "default": "0",
+      "options": [
+        ["0", "Full (the game's radius)"],
+        ["6", "Balanced"],
+        ["5", "Fast"]
+      ]
     }
   ],
   "game": "Library of Ruina 1.0.3",

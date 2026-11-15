@@ -132,6 +132,7 @@ static int s_mapfx = 1;
 static int s_combat_hdr = 1, s_combat_intensity_set;
 static volatile int s_hdr_applied;
 static float s_combat_max_threshold = 0.9f;
+static float s_radius_cap;
 
 static float env_float(const char *name, float def) {
     const char *v = getenv(name);
@@ -150,6 +151,8 @@ static int mod_enabled(void) {
         s_v1_threshold = env_float("DM_POSTFX_BLOOM_THRESHOLD", s_v1_threshold);
         s_v1_knee = env_float("DM_POSTFX_BLOOM_KNEE", s_v1_knee);
         s_v1_radius = env_float("DM_POSTFX_BLOOM_RADIUS", s_v1_radius);
+        s_radius_cap = env_float("DM_POSTFX_RADIUS_CAP", 0);
+        if (s_radius_cap > 0 && s_v1_radius > s_radius_cap) s_v1_radius = s_radius_cap;
         s_v1_antiflicker = (uint8_t)(env_float("DM_POSTFX_BLOOM_ANTIFLICKER", 0) != 0);
         s_combat_intensity = env_float("DM_POSTFX_COMBAT_INTENSITY", s_combat_intensity);
         {
@@ -283,6 +286,10 @@ static void on_bloom_pre(uint64_t *r, int p) {
     if (!bloom) {
         if (log_it || is_new) LOG("[mod post-effects] v1 OnPreCull #%d: behaviour %p profile %p has no bloom model", hits, (const void *)ppb, (const void *)profile);
         return;
+    }
+    if (s_radius_cap > 0 && f32(bloom, F_V1_RADIUS) > s_radius_cap) {
+        if (is_new) LOG("[mod post-effects] bloom radius %.3f -> %.3f (DM_POSTFX_RADIUS_CAP): fewer blur pyramid passes", f32(bloom, F_V1_RADIUS), s_radius_cap);
+        *(float *)(bloom + F_V1_RADIUS) = s_radius_cap;
     }
     uint8_t was_on = bloom[F_MODEL_ENABLED];
     float was_i = f32(bloom, F_V1_INTENSITY);
