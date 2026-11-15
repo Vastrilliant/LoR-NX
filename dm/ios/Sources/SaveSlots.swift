@@ -176,7 +176,7 @@ struct SaveSlotsPage: View {
                         Button { confirming = true } label: {
                             Text("Proceed")
                         }
-                        .buttonStyle(ProceedButtonStyle(height: 46))
+                        .buttonStyle(PillButtonStyle(height: 46))
                         .disabled(working)
                         .transition(.opacity)
                     }
@@ -278,9 +278,12 @@ struct SaveSlotsPage: View {
     }
 }
 
-enum ProceedArt {
-    static let image: UIImage? = SaveStore.resource("proceed_button", "png").flatMap { UIImage(contentsOfFile: $0.path) }
+enum PillArt {
+    static let image: UIImage? = SaveStore.resource("pill_button", "png").flatMap { UIImage(contentsOfFile: $0.path) }
     static let aspect: CGFloat = image.map { $0.size.width / $0.size.height } ?? 4.7
+    static func font(_ size: CGFloat, relativeTo style: Font.TextStyle = .body) -> Font {
+        fontName.map { Font.custom($0, size: size, relativeTo: style) } ?? .system(size: size, weight: .bold)
+    }
     static let lettering = Color(red: 0xC2 / 255, green: 0x9D / 255, blue: 0x69 / 255)
     static let fontName: String? = {
         guard let url = SaveStore.resource("AritaBuriB", "ttf") else { return nil }
@@ -290,22 +293,22 @@ enum ProceedArt {
     }()
 }
 
-struct ProceedButtonStyle: ButtonStyle {
+struct PillButtonStyle: ButtonStyle {
     let height: CGFloat
     @Environment(\.isEnabled) private var enabled
 
     func makeBody(configuration: Configuration) -> some View {
         ZStack {
-            if let art = ProceedArt.image {
+            if let art = PillArt.image {
                 Image(uiImage: art).resizable().interpolation(.high)
             }
             configuration.label
-                .font(ProceedArt.fontName.map { Font.custom($0, size: height * 0.42) } ?? .headline)
+                .font(PillArt.font(height * 0.42))
                 .tracking(1)
-                .foregroundStyle(ProceedArt.lettering)
+                .foregroundStyle(PillArt.lettering)
                 .shadow(color: .black.opacity(0.7), radius: 2, y: 1)
         }
-        .frame(width: height * ProceedArt.aspect, height: height)
+        .frame(width: height * PillArt.aspect, height: height)
         .contentShape(Rectangle())
         .brightness(configuration.isPressed ? 0.3 : 0)
         .scaleEffect(configuration.isPressed ? 0.97 : 1)

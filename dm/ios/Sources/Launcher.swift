@@ -205,7 +205,7 @@ private struct LauncherView: View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
                 VStack(spacing: 16) {
-                    VStack(spacing: 16) {   // the picture and texts bend with the ripple; the Play button does not (a glass button under a shader)
+                    VStack(spacing: 16) {   // the picture and texts bend with the ripple; the Play button does not
                         if let thumbnail = launcherThumbnail() {   // the game's own picture (dm/ios/Resources/LauncherThumbnail.png), shown whole
                             Image(uiImage: thumbnail).resizable().scaledToFit()
                                 .frame(maxWidth: .infinity, maxHeight: 150)
@@ -216,11 +216,11 @@ private struct LauncherView: View {
                                 .accessibilityHidden(true)
                         }
                         Text((info("CFBundleDisplayName") as? String) ?? "Game")
-                            .font(.title.weight(.bold)).multilineTextAlignment(.center)
+                            .font(PillArt.font(28, relativeTo: .title)).multilineTextAlignment(.center)
                         Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(PillArt.font(16, relativeTo: .callout)).foregroundStyle(.secondary)
                         if let nx = info("NXVersion") as? String, !nx.isEmpty {
-                            Text("LoR NX v\(nx)").font(.callout).foregroundStyle(.secondary)
+                            Text("LoR NX v\(nx)").font(PillArt.font(16, relativeTo: .callout)).foregroundStyle(.secondary)
                         }
                     }
                     .hexRippleDistortion()
@@ -313,8 +313,9 @@ private struct LauncherView: View {
     }
 
     @ViewBuilder var playButton: some View {
-        let button = Button(action: pressPlay) { Text("Play").font(.title3.weight(.semibold)).frame(maxWidth: 220) }.controlSize(.large).disabled(starting)
-        if #available(iOS 26.0, *) { button.buttonStyle(.glassProminent) } else { button.buttonStyle(.borderedProminent) }
+        Button(action: pressPlay) { Text("Play") }
+            .buttonStyle(PillButtonStyle(height: 52))
+            .disabled(starting)
     }
 
     // Play: the music stops and the dice sound plays out, while the game starts at once (the audio does not hold it up)
