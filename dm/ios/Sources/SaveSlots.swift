@@ -1,3 +1,4 @@
+import CoreText
 import SwiftUI
 import UIKit
 
@@ -173,11 +174,9 @@ struct SaveSlotsPage: View {
                 ZStack {
                     if selected != nil {
                         Button { confirming = true } label: {
-                            Text("Proceed").font(.headline).frame(maxWidth: 180)
+                            Text("Proceed")
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.blue)
-                        .controlSize(.regular)
+                        .buttonStyle(ProceedButtonStyle(height: 46))
                         .disabled(working)
                         .transition(.opacity)
                     }
@@ -279,6 +278,42 @@ struct SaveSlotsPage: View {
     }
 }
 
+enum ProceedArt {
+    static let image: UIImage? = SaveStore.resource("proceed_button", "png").flatMap { UIImage(contentsOfFile: $0.path) }
+    static let aspect: CGFloat = image.map { $0.size.width / $0.size.height } ?? 4.7
+    static let lettering = Color(red: 0xC2 / 255, green: 0x9D / 255, blue: 0x69 / 255)
+    static let fontName: String? = {
+        guard let url = SaveStore.resource("AritaBuriB", "ttf") else { return nil }
+        CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        guard let descriptors = CTFontManagerCreateFontDescriptorsFromURL(url as CFURL) as? [CTFontDescriptor], let first = descriptors.first else { return nil }
+        return CTFontDescriptorCopyAttribute(first, kCTFontNameAttribute) as? String
+    }()
+}
+
+struct ProceedButtonStyle: ButtonStyle {
+    let height: CGFloat
+    @Environment(\.isEnabled) private var enabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        ZStack {
+            if let art = ProceedArt.image {
+                Image(uiImage: art).resizable().interpolation(.high)
+            }
+            configuration.label
+                .font(ProceedArt.fontName.map { Font.custom($0, size: height * 0.42) } ?? .headline)
+                .tracking(1)
+                .foregroundStyle(ProceedArt.lettering)
+                .shadow(color: .black.opacity(0.7), radius: 2, y: 1)
+        }
+        .frame(width: height * ProceedArt.aspect, height: height)
+        .contentShape(Rectangle())
+        .brightness(configuration.isPressed ? 0.3 : 0)
+        .scaleEffect(configuration.isPressed ? 0.97 : 1)
+        .opacity(enabled ? 1 : 0.5)
+        .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 struct HexagonShape: Shape {
     func path(in rect: CGRect) -> Path {
         let w = rect.width, h = rect.height
@@ -325,6 +360,11 @@ enum HexRippleTiming {
     }
     /// How far the leading edge has gone at a progress: fast at first, slowing down (the same curve is in HexRipple.metal)
     static func front(reach: CGFloat, progress: CGFloat) -> CGFloat { reach * (1 - (1 - progress) * (1 - progress)) }
+    static let lumpMax: CGFloat = 60
+    static func lump(angle: CGFloat, front: CGFloat) -> CGFloat {
+        let shape = 0.5 * sin(3 * angle + 0.7) + 0.3 * sin(5 * angle + 2.1) + 0.2 * sin(8 * angle + 4.0)
+        return shape * min(0.08 * front, lumpMax)
+    }
 }
 
 /// Bends whatever it is on in a ring behind the ripple's leading edge (HexRipple.metal), for as long as a ripple is on screen. Only on plain SwiftUI content: a shader cannot read
@@ -340,7 +380,7 @@ struct HexRippleDistortion: ViewModifier {
                 let origin = live.map { CGPoint(x: $0.0.tile.midX - frame.minX, y: $0.0.tile.midY - frame.minY) } ?? .zero
                 return view.distortionEffect(
                     ShaderLibrary.hexRippleDistort(.float2(origin), .float2(proxy.size), .float(live?.1 ?? 0), .float(HexRippleTiming.band)),
-                    maxSampleOffset: CGSize(width: 16, height: 16), isEnabled: live != nil)
+                    maxSampleOffset: CGSize(width: 40, height: 40), isEnabled: live != nil)
             }
         }
     }
@@ -367,7 +407,7 @@ struct HexRippleView: View {
                 let t = context.date.timeIntervalSince(ripple.start)
                 let origin = CGPoint(x: ripple.tile.midX - corner.x, y: ripple.tile.midY - corner.y)
                 ZStack {
-                    Canvas(rendersAsynchronously: true) { gc, size in draw(gc, size: size, origin: origin, x: x) }
+                    Canvas(rendersAsynchronously: true) { gc, size in draw(gc, size: size, origin: origin, x: x, t: t) }
                     if let icon = ripple.icon {
                         let settle = min(1, t / Self.tileSettle)
                         Image(uiImage: icon).resizable().interpolation(.high).scaledToFit()
@@ -381,9 +421,17 @@ struct HexRippleView: View {
         }
     }
 
-    private func draw(_ gc: GraphicsContext, size: CGSize, origin: CGPoint, x: CGFloat) {
+    private static func hash(_ row: Int, _ column: Int, _ salt: Int) -> CGFloat {
+        var h = UInt32(truncatingIfNeeded: (row &* 73856093) ^ (column &* 19349663) ^ (salt &* 83492791))
+        h ^= h >> 13
+        h = h &* 0x5bd1e995
+        h ^= h >> 15
+        return CGFloat(h & 0xFFFF) / 65535
+    }
+
+    private func draw(_ gc: GraphicsContext, size: CGSize, origin: CGPoint, x: CGFloat, t: Double) {
         let corners = [CGPoint(x: 0, y: 0), CGPoint(x: size.width, y: 0), CGPoint(x: 0, y: size.height), CGPoint(x: size.width, y: size.height)]
-        let reach = (corners.map { hypot($0.x - origin.x, $0.y - origin.y) }.max() ?? 0) + HexRippleTiming.band
+        let reach = (corners.map { hypot($0.x - origin.x, $0.y - origin.y) }.max() ?? 0) + HexRippleTiming.band + HexRippleTiming.lumpMax
         let front = HexRippleTiming.front(reach: reach, progress: x)
         let fade = Double(1 - x)
         let amber = Color(red: 0.88, green: 0.66, blue: 0.32)   // the save buttons' amber
@@ -410,13 +458,21 @@ struct HexRippleView: View {
             for column in -columnsEachWay...columnsEachWay {
                 let cx = origin.x + CGFloat(column) * w + (row & 1 != 0 ? w / 2 : 0)
                 if cx < -r || cx > size.width + r { continue }
-                let behind = front - hypot(cx - origin.x, cy - origin.y)   // how far the leading edge is past this hexagon
+                let dx = cx - origin.x, dy = cy - origin.y
+                let h1 = Self.hash(row, column, 1)
+                let h2 = Self.hash(row, column, 2)
+                let lump = HexRippleTiming.lump(angle: atan2(dy, dx), front: front)
+                let behind = front + lump - hypot(dx, dy) - (h1 - 0.5) * 46   // how far the leading edge is past this hexagon
                 if behind <= 0 { continue }
-                let trail = max(0, 1 - behind / HexRippleTiming.band)
+                let trail = max(0, 1 - behind / (HexRippleTiming.band * (0.7 + 0.6 * h2)))
                 if trail <= 0 { continue }
-                let grow = min(1, behind / Self.lead)
+                let shine = pow(Double(trail), 0.7)
+                let grow = min(1, behind / (Self.lead * (0.6 + 0.8 * h1)))
                 let edge = exp(-pow(Double((behind - 22) / 36), 2))   // 1 just behind the leading edge
-                let radius = r * 0.92 * (0.35 + 0.65 * grow)
+                let flare = h2 > 0.88 ? 0.7 : 0.0
+                let heat = min(1, edge + flare * Double(trail))
+                let gain = (0.6 + 0.95 * Double(h2)) * (0.82 + 0.18 * sin(t * 16 + Double(h2) * 40))
+                let radius = r * 0.92 * (0.78 + 0.22 * h1) * (0.35 + 0.65 * grow)
                 var path = Path()
                 for i in 0..<6 {
                     let angle = CGFloat(i) * .pi / 3 - .pi / 2
@@ -424,20 +480,33 @@ struct HexRippleView: View {
                     if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
                 }
                 path.closeSubpath()
-                let hot = Color(red: 0.88 + 0.12 * edge, green: 0.66 + 0.30 * edge, blue: 0.32 + 0.45 * edge)   // the edge burns toward white
-                glow.stroke(path, with: .color(hot.opacity((0.05 + 0.20 * edge) * trail)), lineWidth: 10)
-                glow.fill(path, with: .color(hot.opacity((0.06 + 0.28 * edge) * trail)))
-                gc.stroke(path, with: .color(hot.opacity((0.35 + 0.60 * edge) * trail)), lineWidth: 1.5)
+                let hot = Color(red: 1.0, green: min(1, 0.72 + 0.12 * Double(h1) + 0.22 * heat), blue: min(1, 0.34 + 0.60 * heat))   // the edge burns toward white
+                func level(_ base: Double, _ peak: Double) -> Double { min(1, (base + peak * heat) * gain * shine) }
+                if edge > 0.12 || flare > 0 {
+                    glow.stroke(path, with: .color(hot.opacity(level(0.10, 0.35))), lineWidth: 26)
+                }
+                glow.stroke(path, with: .color(hot.opacity(level(0.30, 0.55))), lineWidth: 14)
+                glow.fill(path, with: .color(hot.opacity(level(0.16, 0.50))))
+                glow.stroke(path, with: .color(hot.opacity(level(0.45, 0.55))), lineWidth: 2.6)
+                gc.stroke(path, with: .color(hot.opacity(level(0.75, 0.25))), lineWidth: 2.2)
             }
         }
 
         // the shock ring on the leading edge
         if front > 0 && fade > 0 {
-            let ring = Path(ellipseIn: CGRect(x: origin.x - front, y: origin.y - front, width: front * 2, height: front * 2))
+            var ring = Path()
+            let steps = 96
+            for i in 0...steps {
+                let angle = CGFloat(i) / CGFloat(steps) * 2 * .pi
+                let radius = max(0, front + HexRippleTiming.lump(angle: angle, front: front))
+                let point = CGPoint(x: origin.x + radius * cos(angle), y: origin.y + radius * sin(angle))
+                if i == 0 { ring.move(to: point) } else { ring.addLine(to: point) }
+            }
+            ring.closeSubpath()
             let strength = pow(fade, 1.5)
-            glow.stroke(ring, with: .color(amber.opacity(0.10 * strength)), lineWidth: 26)
-            glow.stroke(ring, with: .color(amber.opacity(0.22 * strength)), lineWidth: 10)
-            glow.stroke(ring, with: .color(Color(red: 1, green: 0.93, blue: 0.78).opacity(0.55 * strength)), lineWidth: 2.5)
+            glow.stroke(ring, with: .color(amber.opacity(0.16 * strength)), lineWidth: 30)
+            glow.stroke(ring, with: .color(amber.opacity(0.34 * strength)), lineWidth: 12)
+            glow.stroke(ring, with: .color(Color(red: 1, green: 0.93, blue: 0.78).opacity(0.8 * strength)), lineWidth: 3)
         }
     }
 }
