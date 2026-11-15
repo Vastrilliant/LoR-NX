@@ -2,13 +2,21 @@
 // Register convention: inputs w1.. / outputs w0=Result, x1=value (GetInfo / SetHeapSize), consistent with the public Horizon ABI.
 #include "dm.h"
 #include <sys/mman.h>
+#include <sys/mount.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
 #include <errno.h>
-#include <unistd.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <sched.h>
 #include <time.h>
 #include <stdatomic.h>
 #include <mach/mach.h>
+#include <TargetConditionals.h>
+#include <CoreFoundation/CoreFoundation.h>
+#if TARGET_OS_IPHONE
+#include <os/proc.h>
+#endif
 
 // Reserve one whole block of guest address space, partitioned the Horizon way (address values are the real addresses returned by the host's mmap).
 // It only takes address space, not memory.
@@ -20,6 +28,7 @@
 static uint8_t *g_as;              // ASLR region base = the whole block
 static size_t g_reserve;           // its size: RESERVE, or more with a DM_ALIAS_SIZE alias region
 static uint8_t *g_heap; static _Atomic size_t g_heap_cur; static size_t g_heap_cap;
+static size_t g_heap_seen;
 // Set by the iOS front end (DonatedHeap.m) when the app carries the memory donor extension: called once from mem_init_once with the heap and alias ranges of the block while they are still
 // reserved and inaccessible, so the front end can back them with memory another process owns (launcher setting DM_RAM_EXTEND). NULL on the Mac and in an app without the extension
 void (*dm_guest_backing_hook)(uint8_t *heap, size_t heap_size, uint8_t *alias, size_t alias_size);
@@ -36,9 +45,207 @@ void dm_guest_heap_range(uint64_t *base, size_t *open_len) {
 static uint8_t *g_alias; static size_t g_alias_cap;
 static _Atomic uint64_t *g_alias_bits;   // alias region page bitmap (alias_pages)
 static uint64_t *g_alias_exposed;   // one bit per host page ever opened; protected by g_map_lock
+static uint64_t *g_alias_rel, *g_alias_aged;
+static _Atomic uint64_t g_alias_hw;
 static uint8_t *g_stack; static size_t g_stack_cap;
 // The address lies in the guest address block (every guest thread stack is here: the game's own heap or the stack region); the big-stack entry (hle_bigstack.c) uses it to decide whether to switch stacks
 int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_as && a >= b && a - b < g_reserve; }
+
+#define GF_MAX 1024
+static int g_gf_tab[GF_MAX];
+static int g_gf_n;
+static size_t g_gf_chunk;
+static uint64_t g_gf_min_free;
+static int g_gf_punch = 1;
+static int g_release_remap = 1;
+static _Atomic uint64_t g_gf_punched;
+static char g_gf_dir[1024];
+int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer);
+
+static size_t env_size(const char *name, size_t min, size_t align) {
+    const char *e = getenv(name); char *end;
+    if (!e || !*e) return 0;
+    unsigned long long v = strtoull(e, &end, 0);
+    if (end == e) return 0;
+    if (*end == 'K' || *end == 'k') v <<= 10; else if (*end == 'M' || *end == 'm') v <<= 20; else if (*end == 'G' || *end == 'g') v <<= 30;
+    if (v < min) v = min;
+    if (align) v = (v + align - 1) / align * align;
+    return (size_t)v;
+}
+
+static void guest_file_punch(uintptr_t lo, uintptr_t hi) {
+    while (lo < hi) {
+        size_t off = lo - (uintptr_t)g_as, k = off / g_gf_chunk, in = off - k * g_gf_chunk, fsz = (int)k == g_gf_n - 1 ? g_reserve - k * g_gf_chunk : g_gf_chunk;
+        size_t len = hi - lo < fsz - in ? hi - lo : fsz - in;
+        fpunchhole_t ph = {0}; ph.fp_offset = (off_t)in; ph.fp_length = (off_t)len;
+        if (!fcntl(g_gf_tab[k], F_PUNCHHOLE, &ph)) atomic_fetch_add(&g_gf_punched, len);
+        else { static _Atomic int nred; if (atomic_fetch_add(&nred, 1) < 4) LOG("[RED] [mem] guest file: F_PUNCHHOLE file %zu +%#zx+%#zx failed (errno %d): the range keeps its disk blocks", k, in, len, errno); }
+        lo += len;
+    }
+}
+
+static double guest_file_dirty(char *vec, size_t pg) {
+    size_t np = g_reserve / pg, all = 0;
+    struct { uint8_t *a; size_t n; } r[4] = {{g_as, (size_t)(g_alias - g_as)}, {g_alias, (size_t)atomic_load(&g_alias_hw)}, {g_stack, g_stack_cap}, {g_heap, g_heap_seen}};
+    memset(vec, 0, np);
+    for (int i = 0; i < 4; i++) {
+        size_t lo = (size_t)(r[i].a - g_as) / pg, hi = ((size_t)(r[i].a - g_as) + r[i].n + pg - 1) / pg; if (hi > np) hi = np;
+        if (hi > lo && mincore(g_as + lo * pg, (hi - lo) * pg, vec + lo)) return -1;
+    }
+    for (size_t i = 0; i < np; i++) all += (vec[i] & MINCORE_MODIFIED) != 0;
+    return (double)all * pg;
+}
+
+static void guest_file_sweep(void);
+
+static double guest_file_free_important(void) {
+    CFURLRef u = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)g_gf_dir, (CFIndex)strlen(g_gf_dir), true);
+    double r = -1; int64_t x; CFTypeRef v = NULL;
+    if (!u) return r;
+    if (CFURLCopyResourcePropertyForKey(u, kCFURLVolumeAvailableCapacityForImportantUsageKey, &v, NULL) && v) {
+        if (CFGetTypeID(v) == CFNumberGetTypeID() && CFNumberGetValue((CFNumberRef)v, kCFNumberSInt64Type, &x) && x >= 0) r = (double)x;
+        CFRelease(v);
+    }
+    CFRelease(u); return r;
+}
+
+static void *guest_file_thread(void *arg) {
+    (void)arg; const double G = 1073741824.0; size_t pg = (size_t)getpagesize(); char *vec = malloc(g_reserve / pg + 1);
+    int purge_told = 0;
+    double imp = -1, dirty = -1, count_ms = 0; unsigned imp_at = 0;
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    for (unsigned sec = 1;; sec++) {
+        sleep(1);
+        struct statfs fs; struct rusage_info_v4 ru; task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT; struct stat st; struct timespec t0, t1;
+        if (sec % 10 == 0) guest_file_sweep();
+        if (sec % 10 == 1) {
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            dirty = vec ? guest_file_dirty(vec, pg) : -1;
+            clock_gettime(CLOCK_MONOTONIC, &t1); count_ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+        }
+        double need = dirty > 0 ? dirty : 0, held = 0;
+        int fs_ok = !fstatfs(g_gf_tab[0], &fs); double avail = fs_ok ? (double)fs.f_bavail * fs.f_bsize : -1, room = avail - need;
+        if (fs_ok && g_gf_min_free && room < (double)g_gf_min_free) {
+            if (imp < 0 || sec - imp_at >= 10) { imp = guest_file_free_important(); imp_at = sec; }
+            if (room < g_gf_min_free / 2.0 || imp - need < (double)g_gf_min_free) {
+                LOG("[RED] [mem] guest file: %.1f GB free on its disk (%.1f with what the system can purge), %.1f GB of it still to be taken by dirty pages: under %.1f GB left, stopping the game",
+                    avail / G, imp / G, need / G, g_gf_min_free / G);
+                _exit(87);
+            }
+            if (!purge_told) { purge_told = 1; LOG("[mem] guest file: %.1f GB free on its disk, less %.1f GB for dirty pages, is under %.1f GB, but %.1f GB with what the system can purge: going on (stopping under %.1f GB of f_bavail)",
+                                                    avail / G, need / G, g_gf_min_free / G, imp / G, g_gf_min_free / 2.0 / G); }
+        }
+        if (sec % 10) continue;
+        if (sec - imp_at >= 10) { imp = guest_file_free_important(); imp_at = sec; }
+        for (int i = 0; i < g_gf_n; i++) if (!fstat(g_gf_tab[i], &st)) held += st.st_blocks * 512.0;
+        int ru_ok = !proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t *)&ru);
+        if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) != KERN_SUCCESS) memset(&vi, 0, sizeof vi);
+        LOG("%s[mem] guest file: %.2f GB allocated on disk, %.2f GB dirty in memory (%.0f ms to count, every 10 s), %.2f GB given back as holes; process read %.2f GB, %llu page-ins, logical writes %.2f GB; "
+            "footprint %.2f GB (internal %.2f, compressed %.2f, peak so far %.2f), file pages mapped (external) %.2f GB; %.1f GB free on its disk (%.1f with what the system can purge)",
+            g_gf_min_free && fs_ok && (imp > avail ? imp : avail) - need < g_gf_min_free + G ? "[RED] " : "", held / G, dirty / G, count_ms, atomic_load(&g_gf_punched) / G,
+            ru_ok ? ru.ri_diskio_bytesread / G : -1, ru_ok ? (unsigned long long)ru.ri_pageins : 0ull,
+            ru_ok ? ru.ri_logical_writes / G : -1, vi.phys_footprint / G, vi.internal / G, vi.compressed / G, ru_ok ? ru.ri_lifetime_max_phys_footprint / G : -1, vi.external / G, avail / G, imp / G);
+    }
+    return NULL;
+}
+
+static int guest_file_wanted(const char *e, uint64_t pool, uint64_t room) { return e && *e ? atoi(e) > 0 : room && pool > room; }
+
+static int guest_file_open(const char *path) {
+    const int fl = O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC;
+    for (int i = 0;; i++) {
+#if TARGET_OS_IPHONE
+        int fd = open_dprotected_np(path, fl, 3, 0, 0600);
+        if (fd < 0 && errno != EEXIST) fd = open(path, fl, 0600);
+#else
+        int fd = open(path, fl, 0600);
+#endif
+        if (fd >= 0 || errno != EEXIST || i) return fd;
+        unlink(path);
+    }
+}
+
+#if TARGET_OS_IPHONE
+static int guest_file_class(int fd, char *why, size_t nwhy) {
+    int was = fcntl(fd, F_GETPROTECTIONCLASS), cls = was, err = 0;
+    if (cls != 3 && cls != 4) {
+#ifdef F_SETPROTECTIONCLASS
+        err = fcntl(fd, F_SETPROTECTIONCLASS, 3) ? errno : 0;
+        cls = fcntl(fd, F_GETPROTECTIONCLASS);
+#else
+        err = ENOTSUP;
+#endif
+    }
+    if (cls == 3 || cls == 4) return 1;
+    snprintf(why, nwhy, "protection class %d, not C (3) or D (4), and %d after setting C (errno %d)", was, cls, err);
+    return 0;
+}
+#endif
+
+static int guest_files_map(const char *dir, size_t chunk, int n, struct statfs *fs, char *why, size_t nwhy) {
+    const double G = 1073741824.0; char path[1100]; int made = 0, ok = 1;
+    const char *sep = dir[0] && dir[strlen(dir) - 1] == '/' ? "" : "/";
+    for (int k = 0; ok && k < n; k++) {
+        snprintf(path, sizeof path, "%s%sguest-%d-%d.mem", dir, sep, (int)getpid(), k);
+        if ((g_gf_tab[k] = guest_file_open(path)) < 0) { snprintf(why, nwhy, "cannot create %s, errno %d", path, errno); ok = 0; break; }
+        made++;
+        if (unlink(path)) { snprintf(why, nwhy, "cannot unlink %s, errno %d", path, errno); ok = 0; break; }
+#if TARGET_OS_IPHONE
+        ok = guest_file_class(g_gf_tab[k], why, nwhy);
+#endif
+    }
+    if (ok && fstatfs(g_gf_tab[0], fs)) { snprintf(why, nwhy, "cannot read their disk's free space, errno %d", errno); ok = 0; }
+    if (ok) {
+#if TARGET_OS_IPHONE
+        uint64_t want = g_gf_min_free;
+#else
+        uint64_t want = g_gf_min_free + ((uint64_t)8 << 30);
+#endif
+        double avail = (double)fs->f_bavail * fs->f_bsize, imp = avail < want ? guest_file_free_important() : -1;
+        if (avail < want && (imp < want || avail < g_gf_min_free / 2.0)) { snprintf(why, nwhy, "%.1f GB free on their disk (%.1f with what the system can purge), under %.1f", avail / G, imp / G, want / G); ok = 0; }
+    }
+    for (int k = 0; ok && k < n; k++) {
+        size_t sz = k == n - 1 ? g_reserve - (size_t)k * chunk : chunk; uint8_t *at = g_as + (size_t)k * chunk;
+        if (ftruncate(g_gf_tab[k], (off_t)sz)) { snprintf(why, nwhy, "cannot size file %d to %.2f GB, errno %d", k, sz / G, errno); ok = 0; }
+        else if (mmap(at, sz, PROT_NONE, MAP_SHARED | MAP_FIXED, g_gf_tab[k], 0) != at) { snprintf(why, nwhy, "cannot map file %d, errno %d", k, errno); ok = 0; }
+    }
+    if (ok) return 1;
+    for (int k = 0; k < made; k++) close(g_gf_tab[k]);
+    if (mmap(g_as, g_reserve, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) != g_as) die("reserve guest AS again after DM_GUEST_FILE (errno %d)", errno);
+    return 0;
+}
+
+static void guest_file_init(void) {
+    const double G = 1073741824.0; const char *e = getenv("DM_GUEST_FILE"), *d = getenv("DM_GUEST_FILE_DIR"), *mf = getenv("DM_GUEST_FILE_MIN_FREE"), *rx = getenv("DM_RAM_EXTEND");
+    if (rx && atoi(rx)) { g_release_remap = 0; LOG("[mem] guest memory: backed by the memory donor (DM_RAM_EXTEND), not in files"); return; }
+#if TARGET_OS_IPHONE
+    uint64_t room = os_proc_available_memory();
+    int want = guest_file_wanted(e, DM_GAME_APP_POOL, room);
+    LOG("[mem] guest memory: memory pool %.2f GB, room to the memory limit %.2f GB, DM_GUEST_FILE %s: %s", DM_GAME_APP_POOL / G, room / G, e && *e ? e : "unset", want ? "in files" : "anonymous");
+#else
+    int want = guest_file_wanted(e, DM_GAME_APP_POOL, 0);
+#endif
+    if (!want) return;
+    g_gf_min_free = mf && *mf ? env_size("DM_GUEST_FILE_MIN_FREE", 0, 0x100000) : (uint64_t)2 << 30;
+    size_t chunk = env_size("DM_GUEST_FILE_CHUNK", (size_t)64 << 20, 0x100000); if (!chunk) chunk = (size_t)1 << 30;
+    if ((g_reserve + chunk - 1) / chunk > GF_MAX) chunk = ((g_reserve + GF_MAX - 1) / GF_MAX + 0xfffff) & ~(size_t)0xfffff;
+    int n = (int)((g_reserve + chunk - 1) / chunk); char dir[1024] = "", why[1400]; struct statfs fs;
+    if (d && *d) snprintf(dir, sizeof dir, "%s", d);
+    else if (!confstr(_CS_DARWIN_USER_TEMP_DIR, dir, sizeof dir)) { LOG("[RED] [mem] guest memory: anonymous (DM_GUEST_FILE: no temporary folder, errno %d)", errno); return; }
+    snprintf(g_gf_dir, sizeof g_gf_dir, "%s", dir);
+    if (!guest_files_map(dir, chunk, n, &fs, why, sizeof why)) { LOG("[RED] [mem] guest memory: anonymous (DM_GUEST_FILE: %s)", why); return; }
+    g_gf_n = n; g_gf_chunk = chunk;
+    { const char *pu = getenv("DM_GUEST_FILE_PUNCH"); if (pu && *pu) g_gf_punch = atoi(pu) > 0; }
+    double avail = (double)fs.f_bavail * fs.f_bsize, imp = guest_file_free_important(), most = avail > imp ? avail : imp;
+    LOG("[mem] guest memory: %d files of %.2f GB in %s (unlinked, sparse, shared), %.2f GB in all, on the %s volume, %.1f GB free on it (%.1f with what the system can purge); holes punched where the game gives memory back: %s",
+        n, chunk / G, dir, g_reserve / G, fs.f_fstypename, avail / G, imp / G, g_gf_punch ? "on" : "off (DM_GUEST_FILE_PUNCH=0)");
+    if (g_gf_min_free && most < DM_GAME_APP_POOL + g_gf_min_free)
+        LOG("[RED] [mem] guest file: the files may take up to the memory pool, %.1f GB, and %.1f GB is free: the game is stopped if under %.1f GB is left", DM_GAME_APP_POOL / G, most / G, g_gf_min_free / G);
+    if (strcmp(fs.f_fstypename, "apfs") || !(fs.f_flags & MNT_LOCAL)) LOG("[RED] [mem] guest file: not on a local APFS volume, where it may not be sparse, or be slow");
+    pthread_t th; int rc = pthread_create(&th, NULL, guest_file_thread, NULL);
+    if (!rc) pthread_detach(th);
+    else LOG("[RED] [mem] guest file: no thread to watch it (error %d): no 10-s line, and nothing stops the game when its disk fills", rc);
+}
 
 static void *alias_windows_thread(void *arg);
 static void *regions_thread(void *arg);
@@ -55,6 +262,7 @@ static void mem_init_once(void) {
     g_reserve = RESERVE - DM_GAME_MEM_ALIAS + alias;
     g_as = mmap(NULL, g_reserve, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (g_as == MAP_FAILED) die("reserve guest AS");
+    guest_file_init();
     // Fixed partition (all inside the reserved block): alias 2.875 GB, stack 256 MB, heap the remaining 1.625 GB.
     // In newer SDKs the AddressRegionManager always takes 0x3fe00000 (~1 GB) at the start of the alias region as its node area (sdk 0x134728) before handing out regions; with a 512 MB alias region the very first AllocateAddressRegion fails (0x1803).
     // SMBW also defines a 1792000 KB (1.75 GB) VirtualAddressMemory in HeapDef (System/HeapSize): it is subtracted from the memory pool before the heap is opened (SetHeapSize asks for only 0x5be00000),
@@ -66,6 +274,7 @@ static void mem_init_once(void) {
     g_heap  = g_stack + g_stack_cap; g_heap_cap  = g_reserve - (size_t)(g_heap - g_as);
     if (!(g_alias_bits = calloc((g_alias_cap >> 18) + 1, sizeof *g_alias_bits))) die("alias region page bitmap calloc");
     if (!(g_alias_exposed = calloc(g_alias_cap / pg / 64 + 1, sizeof *g_alias_exposed))) die("alias exposure bitmap calloc");
+    if (!(g_alias_rel = calloc(g_alias_cap / pg / 64 + 1, sizeof *g_alias_rel)) || !(g_alias_aged = calloc(g_alias_cap / pg / 64 + 1, sizeof *g_alias_aged))) die("alias release bitmap calloc");
     LOG("guest AS %p +%#llx  heap %p alias %p stack %p", g_as, (unsigned long long)g_reserve, g_heap, g_alias, g_stack);
     if (dm_guest_backing_hook) dm_guest_backing_hook(g_heap, g_heap_cap, g_alias, g_alias_cap);
     const char *aw = getenv("DM_ALIAS_WINDOWS");
@@ -110,6 +319,22 @@ static uint8_t g_seen[256];
 static struct { uint64_t base, size, src; uint32_t state; } g_map[MAX_MAP];
 static int g_nmap;
 static pthread_mutex_t g_map_lock = PTHREAD_MUTEX_INITIALIZER;
+static void guest_file_sweep(void) {
+    if (!g_gf_punch || !g_alias_rel) return;
+    size_t pg = (size_t)getpagesize(), nw = g_alias_cap / pg / 64 + 1;
+    pthread_mutex_lock(&g_map_lock);
+    for (size_t w = 0; w < nw; w++) {
+        uint64_t a = g_alias_aged[w];
+        while (a) {
+            unsigned b = (unsigned)__builtin_ctzll(a), e = b; while (e < 64 && (a >> e & 1)) e++;
+            guest_file_punch((uintptr_t)g_alias + (w * 64 + b) * pg, (uintptr_t)g_alias + (w * 64 + e) * pg);
+            a &= e == 64 ? 0 : ~UINT64_C(0) << e;
+        }
+        g_alias_rel[w] &= ~g_alias_aged[w];
+        g_alias_aged[w] = g_alias_rel[w];
+    }
+    pthread_mutex_unlock(&g_map_lock);
+}
 // A hole-free read / write of guest heap bytes for the cheat VM (hle_cheats.c): under g_map_lock no concurrent SetHeapSize
 // can mprotect the span away between the bounds check and the copy (both hold this same lock), so a live heap address cannot
 // turn into a fault while the cheat VM touches it. Both return 0 when every byte was inside the currently opened (readable
@@ -188,6 +413,34 @@ static void alias_query(uint64_t addr, uint64_t *base, uint64_t *size, int *mapp
 }
 // Initialize holes using the OLD commit bitmap. Fresh anonymous host pages stay
 // lazy; after any exposure, even an untouched 4 KiB sibling may hold stale bytes.
+static int guest_release(uintptr_t lo, uintptr_t hi, int alias) {
+    if (g_gf_n) {
+        if (mprotect((void *)lo, hi - lo, PROT_NONE)) die("guest_release mprotect %#lx+%#lx errno=%d", (unsigned long)lo, (unsigned long)(hi - lo), errno);
+        if (g_gf_punch && !alias) guest_file_punch(lo, hi);
+        else if (g_gf_punch) { size_t pg = (size_t)getpagesize(); for (uint64_t h = (lo - (uintptr_t)g_alias) / pg, e = (hi - (uintptr_t)g_alias) / pg; h < e; h++) g_alias_rel[h >> 6] |= UINT64_C(1) << (h & 63); }
+        return 0;
+    }
+    if (!g_release_remap) {
+        if (mprotect((void *)lo, hi - lo, PROT_NONE)) die("guest_release mprotect %#lx+%#lx errno=%d", (unsigned long)lo, (unsigned long)(hi - lo), errno);
+        (void)madvise((void *)lo, hi - lo, MADV_FREE);
+        return 0;
+    }
+    if (mmap((void *)lo, hi - lo, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) != MAP_FAILED) return 1;
+    static _Atomic int nred; if (atomic_fetch_add(&nred, 1) < 8) LOG("[RED] guest memory %#lx+%#lx not given back (errno %d): it stays resident", (unsigned long)lo, (unsigned long)(hi - lo), errno);
+    if (mprotect((void *)lo, hi - lo, PROT_NONE)) die("guest_release mprotect %#lx+%#lx errno=%d", (unsigned long)lo, (unsigned long)(hi - lo), errno);
+    return 0;
+}
+static void guest_zero(uint8_t *a, uint64_t n) {
+    for (uint8_t *e = a + n; a < e; a += 4096) {
+        uint64_t w[8], any = 0;
+        for (size_t i = 0; !any && i < 4096; i += sizeof w) { memcpy(w, a + i, sizeof w); any = w[0] | w[1] | w[2] | w[3] | w[4] | w[5] | w[6] | w[7]; }
+        if (any) memset(a, 0, 4096);
+    }
+}
+static void alias_zero(uint64_t p, uint64_t q) {
+    if (g_gf_n) guest_zero(g_alias + (p << 12), (q - p) << 12);
+    else memset(g_alias + (p << 12), 0, (q - p) << 12);
+}
 static void alias_initialize(uint64_t off, size_t size) {
     size_t pg = (size_t)getpagesize(), ratio = pg >> 12;
     uint64_t end = (off + size) >> 12;
@@ -200,12 +453,12 @@ static void alias_initialize(uint64_t off, size_t size) {
                 uint64_t host = q / ratio, stop = (host + 1) * ratio;
                 if (stop > next) stop = next;
                 if (!(g_alias_exposed[host >> 6] & (UINT64_C(1) << (host & 63)))) {
-                    if (clear < q) memset(g_alias + (clear << 12), 0, (q - clear) << 12);
+                    if (clear < q) alias_zero(clear, q);
                     clear = stop;
                 }
                 q = stop;
             }
-            if (clear < next) memset(g_alias + (clear << 12), 0, (next - clear) << 12);
+            if (clear < next) alias_zero(clear, next);
         }
         p = next;
     }
@@ -226,6 +479,34 @@ static int map_source_busy(uint64_t addr, uint64_t size) { // g_map_lock held; n
     for (int i = 0; i < g_nmap; ++i)
         if (addr < g_map[i].src + g_map[i].size && g_map[i].src < addr + size) return 1;
     return 0;
+}
+typedef struct { uint64_t lo, hi; uint32_t n; } dshare_t;
+static dshare_t *g_dshare; static int g_ndshare, g_cdshare;
+static pthread_mutex_t g_dshare_mu = PTHREAD_MUTEX_INITIALIZER;
+void dm_device_share(const void *p, uint64_t size, int share) {
+    uint64_t lo = (uintptr_t)p, hi = lo + size;
+    if (!size || hi < lo) return;
+    pthread_mutex_lock(&g_dshare_mu);
+    int i = 0; while (i < g_ndshare && (g_dshare[i].lo != lo || g_dshare[i].hi != hi)) i++;
+    if (share) {
+        if (i == g_ndshare) {
+            if (g_ndshare == g_cdshare) { g_cdshare = g_cdshare ? 2 * g_cdshare : 64; if (!(g_dshare = realloc(g_dshare, (size_t)g_cdshare * sizeof *g_dshare))) die("device-shared range table"); }
+            g_dshare[g_ndshare++] = (dshare_t){lo, hi, 0};
+        }
+        g_dshare[i].n++;
+    } else if (i < g_ndshare) { if (!--g_dshare[i].n) g_dshare[i] = g_dshare[--g_ndshare]; }
+    else { static int nred; if (nred++ < 8) LOG("[RED] device-shared memory %#llx+%#llx removed but never registered", (unsigned long long)lo, (unsigned long long)size); }
+    pthread_mutex_unlock(&g_dshare_mu);
+}
+static int device_shared(uint64_t addr, uint64_t size, const char *what) {
+    uint64_t lo = 0, hi = 0;
+    pthread_mutex_lock(&g_dshare_mu);
+    for (int i = 0; i < g_ndshare && !hi; i++) if (addr < g_dshare[i].hi && g_dshare[i].lo < addr + size) { lo = g_dshare[i].lo; hi = g_dshare[i].hi; }
+    pthread_mutex_unlock(&g_dshare_mu);
+    static _Atomic int nlog;
+    if (hi && atomic_fetch_add(&nlog, 1) < 8) LOG("[mem] %s %#llx+%#llx refused: it holds device-shared memory (an NVN memory pool's storage %#llx..%#llx), ResultInvalidCurrentMemory as on Horizon",
+                                                  what, (unsigned long long)addr, (unsigned long long)size, (unsigned long long)lo, (unsigned long long)hi);
+    return hi != 0;
 }
 // Loader text/patch seals use 16 KiB boundaries, independently of host page size.
 static void module_readonly_run(uint64_t off, uint64_t start, uint64_t end,
@@ -456,7 +737,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         if (size > g_heap_cap) { LOG("SetHeapSize OOM: req %#zx > cap %#zx", size, g_heap_cap); regs[0] = 0xD001; return 0; }
         pthread_mutex_lock(&g_map_lock);
         size_t previous = g_heap_cur, image = image_bytes();
-        if (size < previous && map_source_busy((uintptr_t)g_heap + size, previous - size)) {
+        if (size < previous && (map_source_busy((uintptr_t)g_heap + size, previous - size) || device_shared((uintptr_t)g_heap + size, previous - size, "SetHeapSize shrinking over"))) {
             pthread_mutex_unlock(&g_map_lock); regs[0] = 0xD401; return 0;
         }
         if (image > APP_POOL || size > APP_POOL - image) {   // ResultLimitReached; games retry in 2 MB decrements
@@ -472,8 +753,10 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         }
         int rc = 0;
         if (size > g_heap_cur) rc = mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE);
-        else if (size < g_heap_cur) rc = mprotect(g_heap + size, g_heap_cur - size, PROT_NONE);
+        else if (size < g_heap_cur) (void)guest_release((uintptr_t)g_heap + size, (uintptr_t)g_heap + g_heap_cur, 0);
         if (rc) die("SetHeapSize mprotect failed: req=%#zx errno=%d", size, errno);
+        if (size > g_heap_cur && g_heap_seen > g_heap_cur && g_gf_n) guest_zero(g_heap + g_heap_cur, (size < g_heap_seen ? size : g_heap_seen) - g_heap_cur);
+        if (size > g_heap_seen) g_heap_seen = size;
         if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p mprotect=%d errno=%d", size, g_heap, rc, errno);
         else if (size > g_heap_cur) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
         g_heap_cur = size;
@@ -603,7 +886,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         // The SDK extends committed windows across borrowed stack sources
         // (Raging Loop, StandardAllocator). Recommit preserves every live byte;
         // only decommit can invalidate backing required for eventual copyback.
-        if (num == 0x2D && map_source_busy(a, size)) { pthread_mutex_unlock(&g_map_lock); regs[0] = 0xD401; return 0; }
+        if (num == 0x2D && (map_source_busy(a, size) || device_shared(a, size, "UnmapPhysicalMemory"))) { pthread_mutex_unlock(&g_map_lock); regs[0] = 0xD401; return 0; }
         uint64_t off = a - (uintptr_t)g_alias;
         int64_t need = alias_unmapped(off, size) * 4096;
         // Profile mem_map_limit: a map that would take the process past the application pool fails with ResultLimitReached, as on Horizon (the pool less the used memory GetInfo reports).
@@ -631,16 +914,22 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
             if ((mhi - hi) / 4096 != (uint64_t)alias_unmapped(hi - (uintptr_t)g_alias, mhi - hi)) mhi -= pg;
         }
         if (changed && mhi > mlo) {
-            if (mprotect((void *)mlo, mhi - mlo, commit ? PROT_READ | PROT_WRITE : PROT_NONE))
-                die("SVC %#x mprotect %p+%#zx errno=%d", num, (void *)a, size, errno);
-            if (commit) dm_guest_write_prepare((void *)mlo, mhi - mlo);
-            else (void)madvise((void *)mlo, mhi - mlo, MADV_FREE);
+            if (commit) {
+                if (mprotect((void *)mlo, mhi - mlo, PROT_READ | PROT_WRITE))
+                    die("SVC %#x mprotect %p+%#zx errno=%d", num, (void *)a, size, errno);
+                dm_guest_write_prepare((void *)mlo, mhi - mlo);
+                if (g_gf_n) for (uint64_t h = (mlo - (uintptr_t)g_alias) / pg, e = (mhi - (uintptr_t)g_alias) / pg; h < e; h++) {
+                    uint64_t m = ~(UINT64_C(1) << (h & 63)); g_alias_rel[h >> 6] &= m; g_alias_aged[h >> 6] &= m; }
+            } else if (guest_release(mlo, mhi, 1)) {
+                for (uint64_t h = (mlo - (uintptr_t)g_alias) / pg, last = (mhi - 1 - (uintptr_t)g_alias) / pg; h <= last; ++h)
+                    g_alias_exposed[h >> 6] &= ~(UINT64_C(1) << (h & 63));
+            }
         }
         if (commit && changed) alias_initialize(off, size);
         if (g_flag.svc) LOG("%sPhysicalMemory %p+%#zx", commit ? "Map" : "Unmap", (void *)a, size);
         // how deep the alias region is used (one line per 256 MB crossed): for sizing the reservation and alias region (iOS caps a single reservation at 6 GB)
-        if (num == 0x2C) { static _Atomic uint64_t hw; uint64_t end = off + size, old = atomic_load(&hw);
-            while (end > old && !atomic_compare_exchange_weak(&hw, &old, end)) {}
+        if (num == 0x2C) { _Atomic uint64_t *hw = &g_alias_hw; uint64_t end = off + size, old = atomic_load(hw);
+            while (end > old && !atomic_compare_exchange_weak(hw, &old, end)) {}
             if (end > old && end >> 28 != old >> 28) LOG("[mem] alias region mapped up to +%.2f GB (alias region %.2f GB)", end / 1073741824.0, g_alias_cap / 1073741824.0); }
         // Total actually mapped in the alias region (one line per 256 MB crossed, up or down): how much physical memory the game uses and whether it keeps growing. Counted with a page bitmap, only pages whose state really changed --
         // the SDK maps pages that are already mapped and unmaps ranges larger than what it mapped (Engage unmaps 0x1000000 and then 0x103f000 at the same address), so counting requested sizes went negative
