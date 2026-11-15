@@ -30,7 +30,7 @@
         "gate": "frame_pre",
         "offset": "0x1ed1a84",
         "word": "a90167fa",
-        "reason": "InputManager.Update, second instruction (once a frame, in every scene; the entry word is the gate of sharp-text): the callback finds the textures that UI Image and RawImage components draw and puts only those on ignoreMipmapLimit"
+        "reason": "InputManager.Update, second instruction (once a frame, in every scene): the callback finds the textures that UI Image and RawImage components draw and puts only those on ignoreMipmapLimit"
       }
     ]
   }
