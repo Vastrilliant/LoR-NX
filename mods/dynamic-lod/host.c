@@ -7,6 +7,7 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define K_RESOLVE_ICALL 0x32F5B4u
 #define K_OBJECT_GETTYPE 0x29B10F0u
 #define K_OBJECT_ALIVE 0x19B3EE0u
+#define K_OBJECT_GET_NAME 0x19B4080u
 #define K_PTR_TO_STRING_ANSI 0x20EEF30u
 #define K_TYPE_GETTYPE 0x26EF270u
 #define K_TEX2D_WHITE 0x2BE48E0u
@@ -31,7 +32,9 @@ void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 #define K_SWEEP_BATCH 48
 #define K_TYPE_TRIES 8
 #define K_SEEN_SLOTS 16384
-#define K_DIAG_TEXTURES 16
+#define K_DIAG_TEXTURES 48
+#define K_CENSUS_EVERY 10
+#define K_CENSUS_MAX 12
 
 static uint8_t *s_main;
 static int g_state, g_frame, g_next_sweep = K_SWEEP_FIRST, g_type_tries;
@@ -42,7 +45,7 @@ typedef struct {
 } sweep_t;
 
 static uintptr_t g_known[K_SEEN_SLOTS];
-static int g_known_count, g_diag;
+static int g_known_count, g_diag, g_sweeps, g_census;
 static int (*g_get_limit)(void);
 static const char *g_limit_name = "";
 
@@ -119,10 +122,24 @@ static void *objects_of(void *type, uint64_t *n) {
     return arr;
 }
 
+static void ascii_name(void *obj, char *out, size_t cap) {
+    void *str = FN(K_OBJECT_GET_NAME, void *, void *, const void *)(obj, NULL);
+    size_t n = 0;
+    if (str) {
+        int len = *(const int *)((uintptr_t)str + 0x10);
+        const uint16_t *ch = (const uint16_t *)((uintptr_t)str + 0x14);
+        for (int i = 0; i < len && n + 1 < cap; i++) out[n++] = ch[i] < 128 ? (char)ch[i] : '?';
+    }
+    out[n] = 0;
+}
+
 static void diag(void *tex, int before, int after) {
-    if (g_diag++ >= K_DIAG_TEXTURES) return;
-    LOG("[mod dynamic-lod] texture %p %dx%d, %d mips, streaming %d, requested %d, desired %d, loaded %d, ignore %d -> %d",
-        tex,
+    if (after || g_diag >= K_DIAG_TEXTURES) return;
+    g_diag++;
+    char name[80];
+    ascii_name(tex, name, sizeof name);
+    LOG("[mod dynamic-lod] stuck texture %p \"%s\" %dx%d, %d mips, streaming %d, requested %d, desired %d, loaded %d, ignore %d -> %d",
+        tex, name,
         FN(K_TEX_GET_WIDTH, int, void *, const void *)(tex, NULL),
         FN(K_TEX_GET_HEIGHT, int, void *, const void *)(tex, NULL),
         FN(K_TEX_MIPCOUNT, int, void *, const void *)(tex, NULL),
@@ -175,9 +192,27 @@ static void sweep_raw_images(sweep_t *s) {
     }
 }
 
+static void census(void) {
+    uint64_t n;
+    void *arr = objects_of(g_tex_type, &n);
+    int total = 0, mipped = 0, ignoring = 0, limited = 0, limited_big = 0;
+    for (uint64_t i = 0; arr && i < n; i++) {
+        void *tex = *(void *const *)((uintptr_t)arr + F_ARRAY_DATA + 8 * i);
+        if (!alive(tex)) continue;
+        total++;
+        if (FN(K_TEX_MIPCOUNT, int, void *, const void *)(tex, NULL) <= 1) continue;
+        mipped++;
+        if (FN(K_TEX2D_GET_IGNORE, uint8_t, void *, const void *)(tex, NULL) & 1) { ignoring++; continue; }
+        limited++;
+        if (FN(K_TEX_GET_WIDTH, int, void *, const void *)(tex, NULL) >= 512) limited_big++;
+    }
+    LOG("[mod dynamic-lod] census frame %d: %d Texture2D, %d with mipmaps, %d ignore the mipmap limit, %d follow it (%d of them 512 px or wider)", g_frame, total, mipped, ignoring, limited, limited_big);
+}
+
 static void sweep_textures(void) {
     g_next_sweep = g_frame + K_SWEEP_IDLE;
     if (!resolve_types()) return;
+    if (g_sweeps++ % K_CENSUS_EVERY == 0 && g_census++ < K_CENSUS_MAX) census();
     sweep_t s = {0};
     sweep_images(&s);
     sweep_raw_images(&s);
