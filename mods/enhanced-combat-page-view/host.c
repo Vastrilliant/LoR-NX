@@ -6,7 +6,7 @@
 //   click_state  BattleDiceCardUI.OnPdSubmit right after its GetClickableState call (x19 = the pressed page, w0 = the state): when swap_press took the press as a tap on the selected page, w0 becomes CanClick_emotion (0), which OnPdSubmit ignores, so the game's own refusal (PlayVibeCard: the shake and its sound) does not play on top of the deselect
 //   apply_pre    BattleUnitCardsInHandUI.ApplySelectedCard entry (x0 = the hand), Suppress On-Play deselect (DM_MOD_ECPV_KEEP): remembers the speed die the hand was opened from when the selected page is an On-Play page (range Instance)
 //   apply_post   SpeedDiceUI.OnClickSpeedDice after its BattleUnitInformationUI.ReleaseSelectedCard call: clicks the remembered die again, which reopens the hand the way the player's own click on that die does, after ApplySelectedCard has closed it
-//   info_alpha   BattleUnitInformationUI.Update right after its CanvasGroup.set_alpha call (x19 = the panel), Fade info panels (DM_MOD_ECPV_DIM): while the hand holds a selected page, the panel's alpha is cut to 25% (75% transparent) and its CanvasGroup stops blocking raycasts, so taps reach what is behind it; the game writes the alpha again every frame and never touches blocksRaycasts, so the alpha reverts by itself and blocksRaycasts is put back when no page is selected
+//   info_alpha   BattleUnitInformationUI.Update right after its CanvasGroup.set_alpha call (x19 = the panel), Fade info panels (DM_MOD_ECPV_DIM): while the hand holds a selected page, the panel's alpha is scaled down by DM_MOD_ECPV_DIMAMOUNT (0 to 1, default 0.75: 75% transparent) and its CanvasGroup stops blocking raycasts, so taps reach what is behind it; the scale eases in and out over DIM_SECONDS, tracked per panel, and blocksRaycasts is put back once the panel is fully back to normal. The game writes the alpha again every frame and never touches blocksRaycasts, so each frame's scale starts from the game's own alpha
 // Not ported: hands of more than 10 pages (the PC mod adds card UI objects), the 65 to 60 rotation constant, and the mouse wheel.
 // Off by default: DM_MOD_ECPV=1 turns the callback on (the launcher's Mods > Enhanced Combat Page View switch, or env.txt). The gate is always in the code and passes through while it is off.
 #include "dm.h"
@@ -108,7 +108,7 @@ extern int (*dm_press_owner)(void *card, void *event);
 #define HOLD_MOVE_PIXELS 48.0f
 #define HOLD_MAX_STEP 0.1f
 #define F_INFO_CANVASGROUP 0xD0
-#define DIM_ALPHA 0.25f
+#define DIM_SECONDS 0.2f
 #define DIM_PANELS 8
 #define DIM_MAX_AGE 1
 #define F_HAND_CARDLIST 0x18                    // BattleUnitCardsInHandUI._cardList (List<BattleDiceCardUI>)
@@ -135,6 +135,7 @@ static int s_dim_evict;
 static struct {
     void *group;
     int blocks;
+    float t;
 } s_dim[DIM_PANELS];
 
 static void hold_begin(void *hand, void *card, int pad);
@@ -186,6 +187,20 @@ static int dim_on(void) {
     return on;
 }
 
+static float dim_amount(void) {
+    static float a = -1;
+    if (a < 0) {
+        const char *v = getenv("DM_MOD_ECPV_DIMAMOUNT");
+        double m = v && v[0] ? atof(v) : 0.75;
+        if (m > 1.0) m /= 100.0;
+        if (m < 0.0) m = 0.0;
+        if (m > 1.0) m = 1.0;
+        a = (float)m;
+        LOG("[mod enhanced-combat-page-view] fade amount %.0f%% (DM_MOD_ECPV_DIMAMOUNT=%s)", m * 100.0, v ? v : "unset");
+    }
+    return a;
+}
+
 static int frame_count(void) { return FN(K_TIME_FRAMECOUNT, int, const void *)(NULL); }
 
 static void update_run(uint64_t *r, int param) {
@@ -220,21 +235,30 @@ static void info_run(uint64_t *r, int param) {
         if (s_dim[i].group == group) slot = i;
         else if (!s_dim[i].group && spare < 0) spare = i;
     }
-    if (page_selected()) {
-        if (slot < 0) {
-            slot = spare >= 0 ? spare : s_dim_evict++ % DIM_PANELS;
-            s_dim[slot].group = group;
-            s_dim[slot].blocks = (int)(FN(K_CANVASGROUP_GET_BLOCKS, uint32_t, void *, const void *)(group, NULL) & 1u);
-            FN(K_CANVASGROUP_SET_BLOCKS, void, void *, int, const void *)(group, 0, NULL);
-            LOG("[mod enhanced-combat-page-view] info panel %#llx faded and click-through", (unsigned long long)(uintptr_t)group);
-        }
-        float alpha = FN(K_CANVASGROUP_GET_ALPHA, float, void *, const void *)(group, NULL);
-        FN(K_CANVASGROUP_SET_ALPHA, void, void *, float, const void *)(group, alpha * DIM_ALPHA, NULL);
-    } else if (slot >= 0) {
+    int target = page_selected();
+    if (slot < 0) {
+        if (!target) return;
+        slot = spare >= 0 ? spare : s_dim_evict++ % DIM_PANELS;
+        s_dim[slot].group = group;
+        s_dim[slot].t = 0.0f;
+        s_dim[slot].blocks = (int)(FN(K_CANVASGROUP_GET_BLOCKS, uint32_t, void *, const void *)(group, NULL) & 1u);
+        FN(K_CANVASGROUP_SET_BLOCKS, void, void *, int, const void *)(group, 0, NULL);
+        LOG("[mod enhanced-combat-page-view] info panel %#llx fading in and click-through", (unsigned long long)(uintptr_t)group);
+    }
+    float dt = FN(K_TIME_UNSCALED_DT, float, const void *)(NULL);
+    float step = (dt > HOLD_MAX_STEP ? HOLD_MAX_STEP : dt) / DIM_SECONDS;
+    float t = s_dim[slot].t + (target ? step : -step);
+    t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
+    s_dim[slot].t = t;
+    if (t <= 0.0f && !target) {
         FN(K_CANVASGROUP_SET_BLOCKS, void, void *, int, const void *)(group, s_dim[slot].blocks, NULL);
         s_dim[slot].group = NULL;
         LOG("[mod enhanced-combat-page-view] info panel %#llx restored", (unsigned long long)(uintptr_t)group);
+        return;
     }
+    float alpha = FN(K_CANVASGROUP_GET_ALPHA, float, void *, const void *)(group, NULL);
+    float eased = t * t * (3.0f - 2.0f * t);
+    FN(K_CANVASGROUP_SET_ALPHA, void, void *, float, const void *)(group, alpha * (1.0f - dim_amount() * eased), NULL);
 }
 
 static int swap_on(void) {

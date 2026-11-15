@@ -150,6 +150,9 @@ def main():
                     if st['format'] not in ('multiplier',): sys.exit(f'[RED] {mid}: setting {st["env"]} has format {st["format"]!r}')
                     row['format'] = st['format']   # multiplier: shown as x1.25 instead of a percentage
             else: row['options'] = st['options']
+            if st.get('greyed'):
+                if not re.fullmatch(r'DM_[A-Z0-9_]+=[^;=]+', st['greyed']): sys.exit(f'[RED] {mid}: setting {st["env"]} greyed {st["greyed"]!r} must be <DM_VAR>=<value>')
+                row['greyed'] = st['greyed']
             rows.append(row)
         launcher_groups.append((int(lc.get('order', 0)), mid, rows))
         if mod.get('host'): shutil.copyfile(os.path.join(d, mod['host']), os.path.join(host, f'hle_mod_{ident(mid).lower()}.c'))

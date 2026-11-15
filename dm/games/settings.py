@@ -88,6 +88,9 @@ def mod_rows(path, taken):
         if r.get('forced'):   # <VAR>=<value>: a mod's switch that follows the row that sets <VAR> (on while it has that value, off otherwise; not offered on the mods page): touch-ui follows Touchscreen Mode
             if not re.fullmatch(r'DM_[A-Z0-9_]+=[^;=]+', r['forced']): sys.exit(f'DM_MODS_SETTINGS: {env} forced {r["forced"]!r} must be <DM_VAR>=<value>')
             row['forced'] = r['forced']
+        if r.get('greyed'):
+            if not re.fullmatch(r'DM_[A-Z0-9_]+=[^;=]+', r['greyed']): sys.exit(f'DM_MODS_SETTINGS: {env} greyed {r["greyed"]!r} must be <DM_VAR>=<value>')
+            row['greyed'] = r['greyed']
         out.append(row)
     return out
 

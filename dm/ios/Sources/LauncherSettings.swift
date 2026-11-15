@@ -9,6 +9,7 @@ struct Setting: Decodable, Identifiable {
     let needs: String?     // "<VAR>=<value>": a sub-setting, drawn only while that setting has that value
     let unless: String?    // "<VAR>=<value>": not drawn while that setting has that value
     let style: String?     // "segmented": a choice drawn as a segmented control instead of a menu (Pointer Mode)
+    let greyed: String?    // "<VAR>=<value>": drawn but greyed out and unchangeable while that setting has that value (a mod's Fade amount while Fade info panels is off)
     let forced: String?    // "<VAR>=<value>" (a mod's switch): the switch follows that setting, on while it has that value and off otherwise, and is not offered on the mods page (touch-ui follows Touchscreen Mode)
     let optionNotes: [String: String]?   // choice: the line under the label for each chosen value (Pointer Mode); a value without one shows note
     let level: String?     // "basic": shown first (the Mac window's Basic settings); any other or none: Advanced settings. The iPhone keeps one list
@@ -37,7 +38,7 @@ struct Setting: Decodable, Identifiable {
         default: return true
         }
     }
-    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, category, needs, unless, style, forced, optionNotes = "option_notes", level, base, options, min, max, step, on, off, format }
+    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, category, needs, unless, greyed, style, forced, optionNotes = "option_notes", level, base, options, min, max, step, on, off, format }
 }
 struct SettingsFile: Decodable { let settings: [Setting] }
 
@@ -81,7 +82,7 @@ final class LauncherModel: ObservableObject {
         guard let v = values[key] else { return true }
         return v == want
     }
-    func greyedOut(_ s: Setting) -> Bool { isForced(s) }
+    func greyedOut(_ s: Setting) -> Bool { isForced(s) || s.greyed.map(holds) ?? false }
     // A row with "forced" follows the setting it names (the touch-ui mod follows Touchscreen Mode): it is switched on while that setting has that value and off as soon as it does not, and it is not drawn,
     // so the mods page never offers it. A row naming a setting this game does not have is not managed: it is drawn and the player's own switch.
     // A switch an env file or the launch environment sets is left as it is (and drawn, greyed out, as any fixed row)

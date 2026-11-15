@@ -1,7 +1,7 @@
 {
   "id": "enhanced-combat-page-view",
   "title": "Enhanced Combat Page View",
-  "description": "Port of Cyaminthe's Enhanced Combat Page View (Workshop 2802216129) as a host callback on an observation gate: the combat pages in the hand are zoomed (x1.25, 25% bigger, by default), and in Touchscreen Mode a tap on another page swaps the selected page, playing an On-Play page keeps the speed die selected, and holding an On-Play page that only affects its user for 0.75 seconds (the left button on it, or X on the selected page) plays it without a target, and while a page is selected the character info panels can be faded to 75% transparent and made click-through. For Library of Ruina 1.0.3.",
+  "description": "Port of Cyaminthe's Enhanced Combat Page View (Workshop 2802216129) as a host callback on an observation gate: the combat pages in the hand are zoomed (x1.25, 25% bigger, by default), and in Touchscreen Mode a tap on another page swaps the selected page, playing an On-Play page keeps the speed die selected, and holding an On-Play page that only affects its user for 0.75 seconds (the left button on it, or X on the selected page) plays it without a target, and while a page is selected the character info panels can be faded, by an amount you choose and with an animation, and made click-through. For Library of Ruina 1.0.3.",
   "launcher": {
     "env": "DM_MOD_ECPV",
     "category": "Quality of Life",
@@ -53,8 +53,19 @@
       "on": "1",
       "off": "0",
       "label": "Fade info panels",
-      "note": "While a combat page is selected, the character info panels become 75% transparent and click-through, and return to normal once no page is selected",
+      "note": "While a combat page is selected, the character info panels fade out and become click-through, and return to normal once no page is selected",
       "default": "0"
+    },
+    {
+      "env": "DM_MOD_ECPV_DIMAMOUNT",
+      "kind": "range",
+      "label": "Fade amount",
+      "note": "How much the info panels fade. 0% leaves them as they are, 100% makes them fully transparent.",
+      "default": "0.75",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "greyed": "DM_MOD_ECPV_DIM=0"
     }
   ],
   "game": "Library of Ruina 1.0.3",

@@ -121,6 +121,20 @@ class LauncherSettingsTests(unittest.TestCase):
                 self.assertRegex(docs, rf'- `{key}` \(optional\)')
         self.assertEqual(schema['properties']['schema']['const'], settings.SCHEMA)
 
+    def test_a_mod_setting_can_be_greyed_by_a_setting(self):
+        mod = json.loads((ROOT / 'mods/enhanced-combat-page-view/mod.json').read_text(encoding='utf-8'))
+        amount = next(st for st in mod['settings'] if st['env'] == 'DM_MOD_ECPV_DIMAMOUNT')
+        self.assertEqual(amount['greyed'], 'DM_MOD_ECPV_DIM=0')
+        schema = json.loads((ROOT / 'docs/launcher.schema.json').read_text(encoding='utf-8'))
+        self.assertRegex(amount['greyed'], schema['$defs']['setting']['properties']['greyed']['pattern'])
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / 'launcher_mods.json'
+            row = {'env': 'DM_MOD_ECPV_DIMAMOUNT', 'kind': 'range', 'label': 'Fade amount', 'default': '0.75', 'min': 0.0, 'max': 1.0, 'step': 0.05, 'greyed': 'DM_MOD_ECPV_DIM=0'}
+            f.write_text(json.dumps({'settings': [row]}), encoding='utf-8')
+            self.assertEqual(settings.mod_rows(f, set())[0]['greyed'], 'DM_MOD_ECPV_DIM=0')
+            f.write_text(json.dumps({'settings': [{**row, 'greyed': 'fade'}]}), encoding='utf-8')
+            with self.assertRaises(SystemExit): settings.mod_rows(f, set())
+
     def test_a_mod_switch_can_be_forced_by_a_setting(self):
         """mod.json launcher "forced" (touch-ui while Touchscreen Mode is on) reaches the app's list through settings.mod_rows, in the form the schema takes"""
         mod = json.loads((ROOT / 'mods/touch-ui/mod.json').read_text(encoding='utf-8'))
