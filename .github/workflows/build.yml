@@ -1,4 +1,4 @@
-name: Build IPA
+name: Xcode - Build
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
         default: "Library of Ruina"
         type: string
       version:
-        description: "LoR NX version: empty uses the VERSION file; major, minor or patch bumps it; or a version such as 0.1.0"
+        description: "version"
         required: false
         default: ""
         type: string
@@ -19,29 +19,18 @@ on:
         description: "Additional parameters"
         required: false
         type: string
-      romfs_mode:
-        description: "upload type"
-        required: true
-        default: headless
-        type: choice
-        options:
-          - headless
-          - bundle
-      shader_mode:
-        description: "shader libraries"
-        required: true
-        default: headless
-        type: choice
-        options:
-          - headless
-          - bundle
-      refresh_cache:
-        description: "Ignore cache downloads"
+      release:
+        description: "upload to releases"
         required: true
         default: false
         type: boolean
-      encrypt:
-        description: "Encrypt archive"
+      upload_romfs:
+        description: "include romfs.img"
+        required: true
+        default: false
+        type: boolean
+      refresh_cache:
+        description: "Ignore cache downloads"
         required: true
         default: false
         type: boolean
@@ -63,11 +52,23 @@ jobs:
   build:
     runs-on: xcode-27
     timeout-minutes: 360
+    permissions:
+      contents: write
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+
+      - name: Check passphrase
+        if: ${{ inputs.upload_romfs }}
+        env:
+          PASS: ${{ secrets.IPA_PASSPHRASE }}
+        run: |
+          if [ -z "$PASS" ]; then
+            echo "::error::The IPA_PASSPHRASE secret is empty; romfs.img is always encrypted"
+            exit 1
+          fi
 
       - name: Normalize tool timestamps
         run: |
@@ -93,11 +94,11 @@ jobs:
           xcodebuild -downloadComponent MetalToolchain || true
           xcrun metal --version
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: "3.14"
 
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: "10.0.x"
 
@@ -108,7 +109,6 @@ jobs:
           set -eo pipefail
           brew install xcodegen zstd glslang sevenzip cmake
           python3 -m pip install lz4 "capstone>=5,<6" fonttools gdown
-          # only needed for .nsz / .xcz files
           python3 -m pip install nsz zbic || echo "::warning::nsz did not install; .nsz/.xcz files will not work"
 
       - name: Restore astcenc
@@ -162,7 +162,6 @@ jobs:
           for fn in astcenc_context_alloc astcenc_compress_image; do
             case "$syms" in *" T _$fn"*) ;; *) echo "::error::$fn missing from libastcenc.a"; exit 1 ;; esac
           done
-          # Not ASTCENC_DIR: that name is the host Makefile's, and the NSP script's Mac host build would then try to link this iOS library into a Mac binary. build_ipa.sh reads this one.
           echo "DM_IOS_ASTCENC_DIR=$HOME/astcenc" >> "$GITHUB_ENV"
           ls -lh "$HOME/astcenc/lib"
 
@@ -189,12 +188,11 @@ jobs:
               name = name.replace("/", "_")
               host = urllib.parse.urlparse(url).netloc.lower()
               if host.endswith(("drive.google.com", "docs.google.com")) and not frag:
-                  name = "-"   # Google Drive: keep the file's own name from Drive
+                  name = "-"
               elif not name.lower().endswith(exts):
                   name = f"download_{n}.nsp"
               print(f"{n}\t{url}\t{name}")
           PY
-          # the cache key: a hash of the links, so changing a link downloads fresh files
           echo "hash=$(shasum -a 256 "$RUNNER_TEMP/links.tsv" | cut -c1-32)" >> "$GITHUB_OUTPUT"
 
       - name: Restore cached game files
@@ -256,9 +254,8 @@ jobs:
           if not raw and not b64:
               sys.exit("Set one secret: PROD_KEYS (the file's text), PROD_KEYS_B64 or PROD_KEYS_URL")
           if raw or "master_key_00" in b64 or "header_key" in b64:
-              data = (raw or b64).replace("\r\n", "\n").encode()   # the file's text was pasted as it is
+              data = (raw or b64).replace("\r\n", "\n").encode()
           else:
-              # tolerant base64: drops certutil's BEGIN/END lines, whitespace and quotes, accepts the URL-safe alphabet
               t = "\n".join(l for l in b64.splitlines() if not l.startswith("-----"))
               t = re.sub(r"[^A-Za-z0-9+/_=-]", "", t).replace("-", "+").replace("_", "/").rstrip("=")
               t += "=" * (-len(t) % 4)
@@ -290,6 +287,7 @@ jobs:
           version=$(python3 scripts/version.py apply "$VERSION_INPUT")
           echo "LoR NX v$version"
           echo "LoR NX v$version" >> "$GITHUB_STEP_SUMMARY"
+          echo "LOR_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Apply mods
         run: python3 scripts/apply_mods.py --out "$HOME/mods"
@@ -298,20 +296,14 @@ jobs:
         env:
           APP_NAME: ${{ inputs.app_name || 'Library of Ruina' }}
           EXTRA_ARGS: ${{ inputs.extra_args }}
-          ROMFS_MODE: ${{ inputs.romfs_mode || 'headless' }}
-          SHADER_MODE: ${{ inputs.shader_mode || 'headless' }}
         run: |
           set -eo pipefail
           GAME_DIR="$HOME/game"
           WORK_DIR="$HOME/work"
           mkdir -p "$WORK_DIR"
-          ROMFS_MODE=${ROMFS_MODE:-headless}
-          if [ "$ROMFS_MODE" = headless ]; then ROMFS_MODE=separate; fi
-          args=("$GAME_DIR" -k "$RUNNER_TEMP/prod.keys" -o "$GAME_DIR/nxnative.ipa" --work-dir "$WORK_DIR" --keep-extracted --romfs "$ROMFS_MODE" --progress lines)
+          args=("$GAME_DIR" -k "$RUNNER_TEMP/prod.keys" -o "$GAME_DIR/nxnative.ipa" --work-dir "$WORK_DIR" --keep-extracted --romfs separate --shaders separate --progress lines)
           if [ -n "$APP_NAME" ]; then args+=(--app-name "$APP_NAME"); fi
-          if [ "$SHADER_MODE" = headless ]; then args+=(--shaders separate); fi
-          # shellcheck disable=SC2086
-          python3 scripts/build_ipa_from_nsp.py "${args[@]}" $EXTRA_ARGS
+          python3 -u scripts/build_ipa_from_nsp.py "${args[@]}" $EXTRA_ARGS 2>&1 | tee "$RUNNER_TEMP/build.out"
           ls -lh "$GAME_DIR/nxnative.ipa"
 
       - name: Check shader output
@@ -327,67 +319,116 @@ jobs:
           path: ~/work/shader
           key: nxshader-v1-${{ steps.links.outputs.hash }}-${{ hashFiles('dm/gfx/**', 'dm/games/**', 'scripts/build_ipa_from_nsp.py') }}
 
-      - name: Show RomFS image identity
-        if: ${{ success() && ((inputs.romfs_mode || 'headless') == 'headless') }}
+      - name: Locate RomFS image
+        if: ${{ success() && inputs.upload_romfs }}
         run: |
           set -eo pipefail
-          for img in "$HOME"/work/extract/*/RomFS.img; do
-            echo "$img"
-            python3 -I dm/tools/romfs_image.py --identity "$img"
-          done
+          img=$(sed -nE 's#^ *scripts/push_romfs\.sh <device UDID> [^ ]+ "(.*)"$#\1#p' "$RUNNER_TEMP/build.out" | tail -1)
+          if [ -z "$img" ]; then
+            set -- "$HOME"/work/extract/*/RomFS.img
+            if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+              echo "::error::Could not tell which RomFS.img this build used"
+              ls -l "$HOME"/work/extract/*/ || true
+              exit 1
+            fi
+            img=$1
+          fi
+          test -f "$img"
+          echo "$img"
+          python3 -I dm/tools/romfs_image.py --identity "$img"
+          echo "ROMFS_IMG=$img" >> "$GITHUB_ENV"
 
       - name: Package output
         env:
-          ENCRYPT: ${{ inputs.encrypt }}
           PASS: ${{ secrets.IPA_PASSPHRASE }}
-          SHADER_MODE: ${{ inputs.shader_mode || 'headless' }}
+          RELEASE: ${{ inputs.release }}
+          UPLOAD_ROMFS: ${{ inputs.upload_romfs }}
         run: |
           set -eo pipefail
-          mkdir -p "$HOME/out"
-          # the shader libraries a headless build leaves out of the IPA are game-derived too: encrypted with the IPA when that is on
-          if [ "$SHADER_MODE" = headless ]; then
-            SHADERS="$HOME/work/ipa/build/ios/pkg/shaders/msl"
-            test -f "$SHADERS/msl.id"
-            if [ "$ENCRYPT" = "true" ] && [ -n "$PASS" ]; then
-              7zz a -mx=0 -mhe=on "-p$PASS" "$HOME/out/nxnative-shaders.7z" "$SHADERS"
-              echo "SHADER_OUT=$HOME/out/nxnative-shaders.7z" >> "$GITHUB_ENV"
-            else
-              echo "SHADER_OUT=$SHADERS" >> "$GITHUB_ENV"
-            fi
-          fi
-          if [ "$ENCRYPT" = "true" ]; then
-            if [ -z "$PASS" ]; then
-              echo "::error::encrypt is on but the IPA_PASSPHRASE secret is empty"
-              exit 1
-            fi
-            7zz a -mx=0 -mhe=on "-p$PASS" "$HOME/out/nxnative-ipa.7z" "$HOME/game/nxnative.ipa"
-            echo "OUT_FILE=$HOME/out/nxnative-ipa.7z" >> "$GITHUB_ENV"
+          out="$HOME/out"
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          cp "$HOME/game/nxnative.ipa" "$out/nxnative.ipa"
+          echo "IPA_OUT=$out/nxnative.ipa" >> "$GITHUB_ENV"
+
+          SHADERS="$HOME/work/ipa/build/ios/pkg/shaders/msl"
+          test -f "$SHADERS/msl.id"
+          stage_sh="$out/nxnative-shaders"
+          mkdir -p "$stage_sh"
+          cp -Rc "$SHADERS" "$stage_sh/msl" 2>/dev/null || cp -R "$SHADERS" "$stage_sh/msl"
+          cp .github/assets/shaders-README.txt "$stage_sh/README.txt"
+          if [ "$RELEASE" = "true" ]; then
+            (cd "$stage_sh" && zip -0 -r -q -X "$out/nxnative-shaders.zip" .)
+            echo "SHADER_OUT=$out/nxnative-shaders.zip" >> "$GITHUB_ENV"
           else
-            cp "$HOME/game/nxnative.ipa" "$HOME/out/nxnative.ipa"
-            echo "OUT_FILE=$HOME/out/nxnative.ipa" >> "$GITHUB_ENV"
+            echo "SHADER_OUT=$stage_sh" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          if [ "$UPLOAD_ROMFS" = "true" ]; then
+            stage="$RUNNER_TEMP/romfs-stage"
+            rm -rf "$stage"
+            mkdir -p "$stage"
+            cp -c "$ROMFS_IMG" "$stage/romfs.img" 2>/dev/null || cp "$ROMFS_IMG" "$stage/romfs.img"
+            7zz a -mx=0 -mhe=on "-p$PASS" "$out/romfs.img.7z" "$stage/romfs.img"
+            rm -rf "$stage"
+            echo "ROMFS_OUT=$out/romfs.img.7z" >> "$GITHUB_ENV"
+          fi
+          ls -lh "$out"
+
+      - name: Upload IPA
+        if: ${{ success() && !inputs.release }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: nxnative-ipa
-          path: ${{ env.OUT_FILE }}
+          path: ${{ env.IPA_OUT }}
           compression-level: 0
           retention-days: 3
 
-      # The shader libraries a headless build leaves out of the IPA (dm/tools/msl_id.py staged them: msl.id and the b-<chain> folder; the 7z, when encrypted, holds that folder as msl).
-      # Unzip into a folder named msl and copy it to the app's Documents (Files app), or scripts/push_shaders.sh; the app uses it only when its msl.id is the one the IPA was built with
-      - name: Shader libraries for Documents/msl
-        if: ${{ success() && (inputs.shader_mode || 'headless') == 'headless' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Upload shader libraries
+        if: ${{ success() && !inputs.release }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: nxnative-shaders
           path: ${{ env.SHADER_OUT }}
           compression-level: 0
           retention-days: 3
 
+      - name: Upload romfs.img
+        if: ${{ success() && inputs.upload_romfs }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: nxnative-romfs
+          path: ${{ env.ROMFS_OUT }}
+          compression-level: 0
+          retention-days: 3
+
+      - name: Publish release
+        if: ${{ success() && inputs.release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eo pipefail
+          command -v gh >/dev/null || HOMEBREW_NO_AUTO_UPDATE=1 brew install gh
+          files=("$IPA_OUT" "$SHADER_OUT")
+          for f in "${files[@]}"; do
+            size=$(stat -f %z "$f")
+            if [ "$size" -ge 2147483648 ]; then
+              echo "::error::$(basename "$f") is $size bytes; a release asset has to be under 2 GiB"
+              exit 1
+            fi
+          done
+          tag="nxnative-v${LOR_VERSION}-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" "${files[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "LoR NX v${LOR_VERSION} (build ${GITHUB_RUN_NUMBER})" \
+            --notes "nxnative.ipa and nxnative-shaders.zip (the msl folder and a README with install instructions). romfs.img, when the build uploads it, is an encrypted artifact of the run, not a release asset."
+          echo "Release: $tag" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Logs on failure
         if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: build-logs
           path: |
