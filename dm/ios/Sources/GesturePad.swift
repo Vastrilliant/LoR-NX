@@ -13,9 +13,9 @@
 //    - Right stick     a scroller: while a finger holds it, moving that finger up or down tilts the right stick, and swipes made elsewhere with another finger move the stick instead of the D-pad
 //    - Swipe lock      toggle. Locked = one D-pad press per swipe, unlocked = several presses per swipe
 //
-// Stylized controls (DM_STYLIZED_CONTROLS, a launcher setting shown only while Touchscreen Mode is off): the buttons are drawn as the game-styled textures of
-// Resources/StylizedControls (one pair per button: the darker-text default and the brighter-text held state, plus the closed / open padlock of the swipe lock)
-// instead of the outline style. Only the look changes: positions, hit areas and presses are the same.
+// Stylized controls (DM_STYLIZED_CONTROLS, a launcher setting shown only while Touchscreen Mode is off): the buttons are drawn as the game-styled sprites of the
+// Resources/StylizedControls/ControllerIcon0.png atlas (StylizedArt.sprites says where each one sits; the held state is the same sprite lit up, and the swipe lock
+// swaps between its closed and open padlock) instead of the outline style. Only the look changes: positions, hit areas and presses are the same.
 //
 // Button positions, sizes and opacity are edited in GestureLayoutEditor.swift (Launcher > Controls > Edit swipe layout) and kept in UserDefaults.
 // Presses reach the host through dm_gesture_button / dm_gesture_stick (DmGamepad.m), which publish them next to the other touch controls.
@@ -61,29 +61,85 @@ enum GestureControlID: String, CaseIterable, Codable {
 }
 
 extension GestureControlID {
-    /// The stylized textures (Resources/StylizedControls/<name>.png): the default one and the one drawn while the control is held. The swipe lock's pair is the closed
-    /// padlock (swipes are locked to one press) and the open one (the lock is open).
-    var artNames: (normal: String, held: String) {
+    /// The stylized sprites (StylizedArt.sprites): the default one and, where the control has a sprite of its own for it, the one drawn while the control is held (the
+    /// swipe lock's open padlock). A nil held name means the default sprite is drawn lit up.
+    var artNames: (normal: String, held: String?) {
         switch self {
         case .lock: return ("lock", "unlock")
-        default: return (rawValue, rawValue + "_held")
+        default: return (rawValue, nil)
         }
     }
 }
 
-/// Loads the stylized textures once. They sit in the StylizedControls folder of the bundle (project.yml), so they are read by path rather than by UIImage(named:).
+/// Reads the stylized sprites out of the atlas once.
 enum StylizedArt {
-    private static var cache: [String: UIImage] = [:]
+    struct Sprite {
+        let rect: CGRect
+        let body: CGRect
+        var bodyAspect: CGFloat { body.height / body.width }
+    }
+
     static let folder = "StylizedControls"
-    /// Texture sizes in pixels: the hexagons are square, the pills 264 x 112 (the width the sprite sheet's pills have, in a canvas 112 tall).
-    static let pillAspect: CGFloat = 112.0 / 264.0
+    static let atlasName = "ControllerIcon0"
+
+    static let sprites: [String: Sprite] = [
+        "a": Sprite(rect: CGRect(x: 0, y: 0, width: 193, height: 199), body: CGRect(x: 31, y: 27, width: 132, height: 146)),
+        "b": Sprite(rect: CGRect(x: 195, y: 0, width: 194, height: 199), body: CGRect(x: 225, y: 26, width: 133, height: 146)),
+        "x": Sprite(rect: CGRect(x: 391, y: 0, width: 194, height: 199), body: CGRect(x: 421, y: 26, width: 133, height: 146)),
+        "y": Sprite(rect: CGRect(x: 587, y: 0, width: 194, height: 199), body: CGRect(x: 617, y: 26, width: 133, height: 146)),
+        "view": Sprite(rect: CGRect(x: 783, y: 0, width: 194, height: 199), body: CGRect(x: 813, y: 26, width: 132, height: 146)),
+        "menu": Sprite(rect: CGRect(x: 0, y: 201, width: 194, height: 199), body: CGRect(x: 30, y: 227, width: 132, height: 146)),
+        "minus": Sprite(rect: CGRect(x: 196, y: 201, width: 194, height: 199), body: CGRect(x: 226, y: 227, width: 132, height: 146)),
+        "plus": Sprite(rect: CGRect(x: 392, y: 201, width: 194, height: 199), body: CGRect(x: 422, y: 227, width: 132, height: 146)),
+        "lock": Sprite(rect: CGRect(x: 588, y: 201, width: 194, height: 199), body: CGRect(x: 618, y: 227, width: 132, height: 146)),
+        "unlock": Sprite(rect: CGRect(x: 784, y: 201, width: 194, height: 199), body: CGRect(x: 814, y: 227, width: 132, height: 146)),
+        "l": Sprite(rect: CGRect(x: 761, y: 599, width: 218, height: 144), body: CGRect(x: 783, y: 626, width: 168, height: 89)),
+        "r": Sprite(rect: CGRect(x: 0, y: 764, width: 218, height: 144), body: CGRect(x: 26, y: 791, width: 169, height: 89)),
+        "zl": Sprite(rect: CGRect(x: 354, y: 599, width: 205, height: 159), body: CGRect(x: 381, y: 623, width: 151, height: 107)),
+        "zr": Sprite(rect: CGRect(x: 561, y: 599, width: 198, height: 154), body: CGRect(x: 586, y: 622, width: 148, height: 104)),
+        "l3": Sprite(rect: CGRect(x: 760, y: 402, width: 208, height: 163), body: CGRect(x: 812, y: 448, width: 104, height: 72)),
+        "r3": Sprite(rect: CGRect(x: 0, y: 599, width: 208, height: 163), body: CGRect(x: 52, y: 645, width: 104, height: 72)),
+        "stick": Sprite(rect: CGRect(x: 210, y: 599, width: 142, height: 163), body: CGRect(x: 229, y: 645, width: 104, height: 72)),
+        "dpad": Sprite(rect: CGRect(x: 0, y: 402, width: 195, height: 195), body: CGRect(x: 28, y: 430, width: 139, height: 138)),
+        "cross": Sprite(rect: CGRect(x: 197, y: 402, width: 191, height: 191), body: CGRect(x: 233, y: 438, width: 119, height: 120)),
+        "diamond": Sprite(rect: CGRect(x: 579, y: 402, width: 179, height: 180), body: CGRect(x: 607, y: 431, width: 122, height: 122)),
+        "diamond_view": Sprite(rect: CGRect(x: 390, y: 402, width: 187, height: 188), body: CGRect(x: 414, y: 426, width: 138, height: 140))
+    ]
+
+    private static var cache: [String: UIImage] = [:]
+
+    private static let atlas: CGImage? = {
+        guard let path = Bundle.main.path(forResource: atlasName, ofType: "png", inDirectory: folder) else { return nil }
+        return UIImage(contentsOfFile: path)?.cgImage
+    }()
+
+    static func sprite(_ name: String) -> Sprite? { sprites[name] }
 
     static func image(_ name: String) -> UIImage? {
         if let hit = cache[name] { return hit }
-        guard let path = Bundle.main.path(forResource: name, ofType: "png", inDirectory: folder),
-              let image = UIImage(contentsOfFile: path) else { return nil }
+        guard let sprite = sprites[name], let piece = atlas?.cropping(to: sprite.rect) else { return nil }
+        let image = UIImage(cgImage: piece, scale: 1, orientation: .up)
         cache[name] = image
         return image
+    }
+
+    static func litImage(_ name: String) -> UIImage? {
+        let key = name + "#lit"
+        if let hit = cache[key] { return hit }
+        guard let base = image(name) else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let lit = UIGraphicsImageRenderer(size: base.size, format: format).image { context in
+            let bounds = CGRect(origin: .zero, size: base.size)
+            base.draw(in: bounds)
+            base.draw(in: bounds, blendMode: .plusLighter, alpha: 0.8)
+            context.cgContext.setBlendMode(.sourceAtop)
+            context.cgContext.setFillColor(UIColor.white.withAlphaComponent(0.2).cgColor)
+            context.cgContext.fill(bounds)
+        }
+        cache[key] = lit
+        return lit
     }
 }
 
@@ -355,7 +411,7 @@ final class GestureControllerUIView: UIView {
                 // The textures run past the control's bounds (their glow and ink splashes), so nothing is clipped and there is no outline.
                 let names = id.artNames
                 art.image = StylizedArt.image(names.normal)
-                heldArt.image = StylizedArt.image(names.held)
+                heldArt.image = names.held.flatMap { StylizedArt.image($0) } ?? StylizedArt.litImage(names.normal)
                 for view in [art, heldArt] {
                     view.contentMode = .scaleToFill
                     view.isUserInteractionEnabled = false
@@ -395,17 +451,14 @@ final class GestureControllerUIView: UIView {
             super.layoutSubviews()
             layer.cornerRadius = isCircle ? min(bounds.width, bounds.height) / 2 : bounds.height / 2
 
-            // Stylized: the texture is centred on the control and a little larger than it, as the artwork has a soft edge around the shape that counts as the control.
+            // Stylized: the sprite is placed so that its solid shape fills the control, its glow running past the bounds.
             var fillSize = bounds.size
-            if stylized {
-                let artSize: CGSize
-                if isCircle {
-                    artSize = CGSize(width: bounds.width * Self.hexArtScale, height: bounds.width * Self.hexArtScale)
-                } else {
-                    let width = bounds.width * Self.pillArtScale
-                    artSize = CGSize(width: width, height: width * StylizedArt.pillAspect)
-                }
-                let frame = CGRect(x: bounds.midX - artSize.width / 2, y: bounds.midY - artSize.height / 2, width: artSize.width, height: artSize.height)
+            if stylized, let sprite = StylizedArt.sprite(id.artNames.normal) {
+                let scale = bounds.width / sprite.body.width
+                let size = CGSize(width: sprite.rect.width * scale, height: sprite.rect.height * scale)
+                let origin = CGPoint(x: bounds.midX - (sprite.body.midX - sprite.rect.minX) * scale,
+                                     y: bounds.midY - (sprite.body.midY - sprite.rect.minY) * scale)
+                let frame = CGRect(origin: origin, size: size)
                 art.frame = frame
                 heldArt.frame = frame
                 fillSize = frame.size
@@ -422,11 +475,7 @@ final class GestureControllerUIView: UIView {
         }
 
         private static let emptyFill = CATransform3DMakeScale(0.0001, 1, 1)
-        /// How much larger than the control the stylized texture is drawn: the hexagon's body fills about four fifths of its square, a pill's about nine tenths of its width.
-        static let hexArtScale: CGFloat = 1.25
-        static let pillArtScale: CGFloat = 1.1
-        /// A stylized pill is this tall for its width: the proportions of the drawn shape, so the control's bounds (hit area, selection ring) match it.
-        static let pillBodyAspect: CGFloat = 0.32
+        var bodyAspect: CGFloat { StylizedArt.sprite(id.artNames.normal)?.bodyAspect ?? 1 }
 
         /// Fills the control from empty to full in `duration`, evenly.
         func startFill(duration: TimeInterval) {
@@ -502,8 +551,8 @@ final class GestureControllerUIView: UIView {
             make(.zr, .button(.rightTrigger), "ZR", circle: false),
             make(.x, .button(.x), "X", circle: true),
             make(.y, .button(.y), "Y", circle: true),
-            make(.minus, .button(.minus), "−", circle: false),
-            make(.plus, .button(.plus), "+", circle: false),
+            make(.minus, .button(.minus), "−", circle: styled),
+            make(.plus, .button(.plus), "+", circle: styled),
             make(.l3, .button(.leftStick), "L3", circle: true),
             make(.r3, .button(.rightStick), "R3", circle: true),
             make(.stick, .stickScroll, "RS", circle: true, symbol: "r.joystick"),
@@ -629,6 +678,7 @@ final class GestureControllerUIView: UIView {
     private var scale: CGFloat { min(max(bounds.height / 430, 0.6), 1.3) }
     private var pillSize: CGSize { CGSize(width: 50 * scale, height: 32 * scale) }
     private var circleSize: CGSize { CGSize(width: 48 * scale, height: 48 * scale) }
+    private var compactCircleSize: CGSize { CGSize(width: 30 * scale, height: 30 * scale) }
 
     /// Editor grid cell, in points. Square cells sized from the short side of the screen.
     private var gridCell: CGFloat {
@@ -654,10 +704,10 @@ final class GestureControllerUIView: UIView {
 
         for control in controls {
             let item = layout.effective(control.id)
-            let base = control.isCircle ? circleSize : pillSize
+            let base = stylized && (control.id == .minus || control.id == .plus) ? compactCircleSize : (control.isCircle ? circleSize : pillSize)
             var size = CGSize(width: base.width * item.scale, height: base.height * item.scale)
-            // A stylized pill has the drawn shape's proportions, so its bounds (hit area, selection ring) match the texture.
-            if stylized, !control.isCircle { size.height = size.width * ControlView.pillBodyAspect }
+            // A stylized control has the drawn shape's proportions, so its bounds (hit area, selection ring) match the sprite.
+            if stylized { size.height = size.width * control.bodyAspect }
 
             control.alpha = min(max(item.opacity ?? 1, 0.05), 1)
 
