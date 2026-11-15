@@ -18,10 +18,6 @@ targets:
         buildPhase: resources
       - path: Resources/LauncherBGM.m4a   # the launcher's looping music, the first 1:30 of the track (LauncherAudio.swift)
         buildPhase: resources
-      - path: Resources/TouchKeyEsc.png
-        buildPhase: resources
-      - path: Resources/TouchKeyAlt.png
-        buildPhase: resources
       - path: Resources/StylizedControls   # the swipe pad's game-styled button sprite atlas (GesturePad.swift, setting Stylized controls)
         type: folder
         buildPhase: resources
