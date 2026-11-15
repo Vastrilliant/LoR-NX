@@ -1,0 +1,26 @@
+{
+  "id": "dynamic-lod",
+  "title": "DynamicLOD",
+  "description": "Dynamically adjusts the texture's Level of Detail levels to improve visuals with minimal overhead.",
+  "launcher": {
+    "env": "DM_MOD_DYNAMICLOD",
+    "category": "Graphics",
+    "label": "DynamicLOD",
+    "note": "Dynamically adjusts the texture's Level of Detail levels to improve visuals with minimal overhead."
+  },
+  "game": "Library of Ruina 1.0.3",
+  "gates": [
+    "frame_pre"
+  ],
+  "host": "host.c",
+  "obs": {
+    "aeea627ddbd1214764dfef5f965e94a2": [
+      {
+        "gate": "frame_pre",
+        "offset": "0x1ed1a84",
+        "word": "a90167fa",
+        "reason": "InputManager.Update, second instruction (once a frame, in every scene; the entry word is the gate of sharp-text): the callback finds the textures that UI Image and RawImage components draw and puts only those on ignoreMipmapLimit"
+      }
+    ]
+  }
+}
