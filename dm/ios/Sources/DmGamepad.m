@@ -15,7 +15,7 @@
 //   Each physical controller is a player of its own (local co-op), as on the Mac: the first one connected is player 1, together with the touch gamepad, the next player 2, and so on up to 8; see "Physical controllers" below.
 //   Touchscreen Mode (DM_TOUCHSCREEN=1) replaces all of it: the screen is a touchpad for the game's mouse (tsBegan below: one finger drags the cursor, a tap is the left button, a hold presses the left button until the finger lifts, three fingers swiping hold the left button, two fingers moving up or down scroll the wheel and pinching zooms it;
 //     (Pointer Mode Touch, DM_POINTER_MODE=touch, puts the cursor under the finger instead: touch down = left button down, lift = left button up, moving in between drags; the touch-ui mod then hides the game's own cursor)
-//     the app draws no cursor: the game's own is moved by the mouse; the left click reaches the game as a touch-screen press at the cursor, since the touch-ui mod makes the game read the touch screen: hle_touch.c trackpad_touch) and Esc and Alt are the keyboard's keys (front.h dm_mouse_*, dm_key_modifier, dm_key_press), drawn as the textures TouchKeyEsc.png and TouchKeyAlt.png (Resources, bundled by project.yml), each pinned to a screen corner and not movable: Esc at the top left, Alt (the texture mirrored) at the bottom left, each a fixed K_KB_W wide; the part of a key over the picture is click-through (the touch goes to the touchpad) and drawn with the overlay blend mode, only the part in the bar beside the picture takes the press
+//     the app draws no cursor: the game's own is moved by the mouse; the left click reaches the game as a touch-screen press at the cursor, since the touch-ui mod makes the game read the touch screen: hle_touch.c trackpad_touch) and Esc and Alt are the keyboard's keys (front.h dm_mouse_*, dm_key_modifier, dm_key_press), drawn as the textures TouchKeyEsc.png and TouchKeyAlt.png (Resources, bundled by project.yml), each pinned to a screen corner and not movable: Esc at the top left, Alt (the texture mirrored) at the bottom left, each a fixed width (K_KB_W, K_KB_ALT_W for Alt); the part of a key over the picture is click-through (the touch goes to the touchpad) and drawn with the overlay blend mode, only the part in the bar beside the picture takes the press
 //     Clicks, scroll steps and the keys give a haptic tap while DM_TOUCH_HAPTICS is on.
 //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
 #import <UIKit/UIKit.h>
@@ -150,6 +150,7 @@ static const CGFloat
     K_TP_STEP = 26,                                 // two fingers travelling this many points up or down scroll the wheel one notch
     K_TP_PINCH = 24,                                // two fingers moving this many points apart (together) zoom one notch in (out): the wheel, up when they spread
     K_KB_W = 160,                                   // a key texture is this wide (u), whatever the bar beside the picture measures; the part over the picture is click-through and drawn with the overlay blend mode
+    K_KB_ALT_W = 118,
     K_KB_HIT = 44;                                  // a key is at least this big to hit, however small it is drawn
 static const float K_KB_IDLE = 0.85f;               // a key texture's opacity while no finger is on it (1 while one is)
 static const NSTimeInterval K_TP_HOLD = 0.45;       // Trackpad pointer mode: a finger held still this long presses the left button until it lifts
@@ -472,7 +473,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 - (CGRect)kbRect:(int)i { return _kbFrame[i]; }
 - (CGRect)tsKeyFrame:(int)i {
     CGRect b = self.bounds;
-    CGFloat w = K_KB_W * self.u, h = w * _kbAspect[i];
+    CGFloat w = (i == TS_ALT ? K_KB_ALT_W : K_KB_W) * self.u, h = w * _kbAspect[i];
     return CGRectMake(0, i == TS_ESC ? 0 : b.size.height - h, w, h);
 }
 - (BOOL)kbSolid:(int)i {   // the key is only click-through over the picture when enough of it lies outside the picture to be hit there; with no bar beside the picture the whole key is solid
