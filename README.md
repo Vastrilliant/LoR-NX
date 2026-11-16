@@ -31,7 +31,9 @@ Follow the README instructions inside **nxnative-shaders.zip**
 
 A desktop environment for initial setup, if unavailable, see [SideInstaller](https://sideinstaller.net/)
 
-Recommended Specs: A12 or higher, 4GBs of RAM or higher
+System requirements: A14 chipset or higher, M1 chipset or later 
+
+The game **will not** boot up on lower chipsets, NVN needs Metal 4 to work, which isn’t supported on older models
 
 ## Legal
 
