@@ -389,6 +389,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     dm_touch_set(t, n);
 }
 - (BOOL)gameBegin:(UITouch *)t {
+    if (!CGRectContainsPoint([self picture], [t locationInView:self])) return NO;
     for (int i = 0; i < 16; i++) if (!_game[i]) { _game[i] = t; [_owner setObject:@(C_GAME | (uint64_t)i << 8) forKey:t]; return YES; }
     return NO;
 }
@@ -498,6 +499,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 - (CGFloat)padDist { CGPoint a = [_pad[0] locationInView:self], b = [_pad[1] locationInView:self]; return hypot(a.x - b.x, a.y - b.y); }
 - (void)tsBegan:(NSSet<UITouch *> *)ts {
     for (UITouch *t in ts) {
+        if (!CGRectContainsPoint([self picture], [t locationInView:self])) continue;
         if (_pad.count >= 3) { _padShifted = YES; continue; }
         [_pad addObject:t];
         [_padOrigin setObject:[NSValue valueWithCGPoint:[t locationInView:self]] forKey:t];
