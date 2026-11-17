@@ -1391,11 +1391,17 @@ static void *rd_hook_mmap(void *address, size_t length, int prot, int flags, int
     return g_origMmap(address, length, prot, flags, fd, offset);
 }
 
+static void rd_pool_give_mapping(void *address, uint64_t length)
+{
+    mprotect(address, (size_t)rd_round_page(length), PROT_READ | PROT_WRITE);
+    rd_pool_give(address, length);
+}
+
 static int rd_hook_munmap(void *address, size_t length)
 {
     if (length != 0 && rd_pool_contains(address, length))
     {
-        rd_pool_give(address, length);
+        rd_pool_give_mapping(address, length);
         return 0;
     }
 
@@ -1480,7 +1486,7 @@ static kern_return_t rd_hook_vm_deallocate(vm_map_t target, vm_address_t address
 {
     if (target == mach_task_self() && size != 0 && rd_pool_contains((const void *)address, size))
     {
-        rd_pool_give((void *)address, size);
+        rd_pool_give_mapping((void *)address, size);
 
         return KERN_SUCCESS;
     }
@@ -1492,7 +1498,7 @@ static kern_return_t rd_hook_mach_vm_deallocate(vm_map_t target, mach_vm_address
 {
     if (target == mach_task_self() && size != 0 && rd_pool_contains((const void *)(uintptr_t)address, size))
     {
-        rd_pool_give((void *)(uintptr_t)address, size);
+        rd_pool_give_mapping((void *)(uintptr_t)address, size);
 
         return KERN_SUCCESS;
     }
