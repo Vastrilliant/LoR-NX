@@ -25,10 +25,11 @@ static int read_at(int fd, void *buf, size_t n, off_t at) {
     return 1;
 }
 
-typedef struct { NSString *rel; BOOL dir; uint16_t method; uint64_t csize, usize, local; } zip_entry;
+@interface DmZipEntry : NSObject { @public NSString *rel; BOOL dir; uint16_t method; uint64_t csize, usize, local; } @end
+@implementation DmZipEntry @end
 
 // The entries under msl/ with their path relative to msl/. Anything else (README.txt, __MACOSX) is left out; a path that could leave the folder is an error
-static NSArray<NSValue *> *zip_msl_entries(int fd, off_t size, NSError **err) {
+static NSArray<DmZipEntry *> *zip_msl_entries(int fd, off_t size, NSError **err) {
     size_t tail = (size_t)MIN((off_t)(65535 + 22), size); uint8_t *buf = malloc(tail);
     if (!buf || !read_at(fd, buf, tail, size - (off_t)tail)) { free(buf); *err = shader_error(@"The downloaded file could not be read."); return nil; }
     ssize_t e = -1;
@@ -38,7 +39,7 @@ static NSArray<NSValue *> *zip_msl_entries(int fd, off_t size, NSError **err) {
     if (count == 0xFFFF || cd_size == 0xFFFFFFFFu || cd_off == 0xFFFFFFFFu || (off_t)cd_off + (off_t)cd_size > size) { *err = shader_error(@"The downloaded zip archive is not supported."); return nil; }
     uint8_t *cd = malloc(cd_size ?: 1);
     if (!cd || !read_at(fd, cd, cd_size, cd_off)) { free(cd); *err = shader_error(@"The downloaded file could not be read."); return nil; }
-    NSMutableArray<NSValue *> *out = [NSMutableArray array]; size_t at = 0;
+    NSMutableArray<DmZipEntry *> *out = [NSMutableArray array]; size_t at = 0;
     for (uint16_t i = 0; i < count; i++) {
         if (at + 46 > cd_size || rd32(cd + at) != 0x02014b50) { free(cd); *err = shader_error(@"The downloaded zip archive is damaged."); return nil; }
         uint16_t flags = rd16(cd + at + 8), method = rd16(cd + at + 10), nlen = rd16(cd + at + 28), xlen = rd16(cd + at + 30), clen = rd16(cd + at + 32);
@@ -56,14 +57,15 @@ static NSArray<NSValue *> *zip_msl_entries(int fd, off_t size, NSError **err) {
         if (flags & 1) { free(cd); *err = shader_error(@"The downloaded zip archive is encrypted."); return nil; }
         if (csize == 0xFFFFFFFFu || usize == 0xFFFFFFFFu || local == 0xFFFFFFFFu) { free(cd); *err = shader_error(@"The downloaded zip archive is not supported."); return nil; }
         if (method != 0 && method != 8) { free(cd); *err = shader_error(@"The downloaded zip archive uses an unsupported compression."); return nil; }
-        zip_entry z = {rel, dir, method, csize, usize, local};
-        [out addObject:[NSValue valueWithBytes:&z objCType:@encode(zip_entry)]];
+        DmZipEntry *z = [DmZipEntry new];
+        z->rel = rel; z->dir = dir; z->method = method; z->csize = csize; z->usize = usize; z->local = local;
+        [out addObject:z];
     }
     free(cd); return out;
 }
 
 // Writes one entry's data to dst. Stored: a copy. Deflated: raw deflate through Apple's compression library (COMPRESSION_ZLIB is the raw format a zip holds)
-static NSError *zip_extract(int fd, const zip_entry *z, NSString *dst, uint64_t *done, uint64_t total, void (^prog)(double)) {
+static NSError *zip_extract(int fd, DmZipEntry *z, NSString *dst, uint64_t *done, uint64_t total, void (^prog)(double)) {
     uint8_t lh[30];
     if (!read_at(fd, lh, sizeof lh, (off_t)z->local) || rd32(lh) != 0x04034b50) return shader_error(@"The downloaded zip archive is damaged.");
     off_t data = (off_t)z->local + 30 + rd16(lh + 26) + rd16(lh + 28);
@@ -119,20 +121,19 @@ static NSError *unpack_msl(NSString *zip, NSString *doc, void (^progress)(double
     int fd = open(zip.fileSystemRepresentation, O_RDONLY); if (fd < 0) return shader_error(@"The downloaded file could not be opened.");
     struct stat st; if (fstat(fd, &st) || st.st_size < 22) { close(fd); return shader_error(@"The downloaded file is not a zip archive."); }
     NSError *err = nil;
-    NSArray<NSValue *> *entries = zip_msl_entries(fd, st.st_size, &err);
+    NSArray<DmZipEntry *> *entries = zip_msl_entries(fd, st.st_size, &err);
     if (!entries) { close(fd); return err; }
     if (!entries.count) { close(fd); return shader_error(@"The downloaded archive has no msl folder."); }
-    uint64_t total = 0; for (NSValue *v in entries) { zip_entry z; [v getValue:&z]; if (!z.dir) total += z.usize; }
+    uint64_t total = 0; for (DmZipEntry *z in entries) if (!z->dir) total += z->usize;
     NSString *stage = [doc stringByAppendingPathComponent:@"msl.download"], *msl = [doc stringByAppendingPathComponent:@"msl"];
     [fm removeItemAtPath:stage error:nil];
     if (![fm createDirectoryAtPath:stage withIntermediateDirectories:YES attributes:nil error:&err]) { close(fd); return err; }
     uint64_t done = 0;
-    for (NSValue *v in entries) {
-        zip_entry z; [v getValue:&z];
-        NSString *dst = [stage stringByAppendingPathComponent:z.rel];
-        if (z.dir) { if (![fm createDirectoryAtPath:dst withIntermediateDirectories:YES attributes:nil error:&err]) break; continue; }
+    for (DmZipEntry *z in entries) {
+        NSString *dst = [stage stringByAppendingPathComponent:z->rel];
+        if (z->dir) { if (![fm createDirectoryAtPath:dst withIntermediateDirectories:YES attributes:nil error:&err]) break; continue; }
         if (![fm createDirectoryAtPath:dst.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:&err]) break;
-        err = zip_extract(fd, &z, dst, &done, total, progress); if (err) break;
+        err = zip_extract(fd, z, dst, &done, total, progress); if (err) break;
     }
     close(fd);
     if (!err && ![fm fileExistsAtPath:[stage stringByAppendingPathComponent:@"msl.id"]]) err = shader_error(@"The downloaded shader libraries have no msl.id.");
