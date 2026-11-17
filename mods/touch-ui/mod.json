@@ -1,7 +1,7 @@
 {
   "id": "touch-ui",
   "title": "Touch UI",
-  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot and keeps the librarian's hand shown (a click on the already selected speed dice no longer leaves it, the first tap of the double tap doing nothing), while a character is selected it closes the character anywhere on the screen, and anywhere else while the hand is shown it exits the hand, gives the touch feedback only for a tap that lands on something clickable (a button, toggle, combat page or speed dice), and puts a Leave button, built from the preparation menu's own Leave button, at the bottom center of the reception bookshelf, which has no back button",
+  "description": "Disables controller mode, routes Input.touchCount / GetTouch to the legacy touch provider and gives Input's mouse and keyboard natives, and Input.GetAxis / GetAxisRaw for the \"Mouse ScrollWheel\" axis, to Touchscreen Mode's touchpad and keys, zooms the combat camera with the touchpad's pinch / wheel, and, in Touch pointer mode (DM_POINTER_MODE=touch), hides the game's cursor by replacing Cursor.SetCursor and Cursor.set_visible, and lets the inventory lists (combat pages, key pages, burning books, passive succession) scroll by dragging, runs the hover of a combat page in the hand that is pressed before it (so a tap selects it at once), and turns a double tap into a right click: on a speed dice it empties the dice's slot and keeps the librarian's hand shown (a click on the already selected speed dice no longer leaves it, the first tap of the double tap doing nothing), while a character is selected it closes the character anywhere on the screen, and anywhere else while the hand is shown it exits the hand, gives the touch feedback only for a tap that lands on something clickable (a button, toggle, combat page or speed dice), and puts a Leave button, built from the preparation menu's own Leave button, at the bottom center of the reception bookshelf, which has no back button, and keeps the reception map's camera where it is when a reception node is closed (the game's selection of a node, which is not a pointer event, no longer moves it to the first reception)",
   "launcher": {
     "env": "DM_MOD_TOUCHUI",
     "category": "Quality of Life",
@@ -187,6 +187,13 @@
         "offset": "0x21c5580",
         "word": "6dbd23e9",
         "reason": "BattleUnitInformationUI.Update entry: x0 = the information panel; the host remembers the live panels, and _hasClickedUnit (+0x150) set on one of them is a character being selected, which a double tap anywhere on the screen closes as a right click"
+      },
+      {
+        "gate": "icall_resolved",
+        "param": 22,
+        "offset": "0x2377d40",
+        "word": "7100101f",
+        "reason": "UIStoryProgressIconSlot.OnPointerEnter, at cmp w0,#4 after UIControlManager.GetInpuTypeOf (w0 = the input type, 4 = ControllerInput, returned for any event that is not a PointerEventData): the controller branch that follows calls UIStoryProgressPanel.MoveChapterTarget with the slot's chapter, which is 0 for a reception node and sends the camera to the first reception; a selection made by the game when the node is closed raises it, so w0 is turned into Default and the branch is not taken"
       }
     ]
   }

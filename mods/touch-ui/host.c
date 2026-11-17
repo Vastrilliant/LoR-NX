@@ -939,6 +939,8 @@ static void on_inv_update(uint64_t *r, int p) {
     }
 }
 
+#define INPUT_TYPE_DEFAULT 0u
+#define INPUT_TYPE_CONTROLLER 4u
 #define F_TRIGGER_ENTRIES 0x18u
 #define F_LIST_ITEMS 0x10u
 #define F_LIST_SIZE 0x18u
@@ -971,7 +973,16 @@ static void on_selectable_click(uint64_t *r) {
     if (self && self[F_SELECTABLE_INTERACTABLE]) game_click();
 }
 
+static void on_slot_enter_type(uint64_t *r) {
+    if (!mod_enabled() || !dm_touchscreen_mode() || !main_base() || !build_matches()) return;
+    if ((uint32_t)r[0] != INPUT_TYPE_CONTROLLER) return;
+    r[0] = INPUT_TYPE_DEFAULT;
+    static int n_log;
+    if (n_log++ < 10) LOG("[mod touch-ui] reception node %p entered by a selection: the map camera is left where it is", (void *)(uintptr_t)r[19]);
+}
+
 static void on_icall_resolved(uint64_t *r, int p) {
+    if (p == 22) { on_slot_enter_type(r); return; }
     if (p == 17) { on_trigger_click(r); return; }
     if (p == 18 || p == 19) { on_selectable_click(r); return; }
     if (p == 16) { on_inv_update(r, p); return; }
