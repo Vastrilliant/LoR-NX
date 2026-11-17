@@ -4,7 +4,7 @@ Library of Ruina's Nintendo Switch version, running natively on your iPhone as a
 
 ## Features 
 
-LoR NX Features several mods that aim to fix Arc Systemworks' shortcomings with the Switch Port, as well as several QoL life mods every Ruina player knows and uses 
+LoR NX Features several mods that aim to fix Arc Systemworks' shortcomings with the Switch Port, as well as several QoL mods every Ruina player knows and uses 
 
 Featured Mods: 
 * No grind 
@@ -20,11 +20,9 @@ Several mods have been taken and ported from [Library of Ruina's Steam Workshop]
 
 ## Installation 
 
-Download **nxnative.ipa** and **nxnative-shaders.zip** from the [releases tab](../../releases/latest). The romfs.img is available to download in the [Discord](https://discord.gg/nRmztE2unw)
+Download **nxnative.ipa** from the [releases tab](../../releases/latest). The romfs.img is available to download in the [Discord](https://discord.gg/nRmztE2unw)
 
 Install the .ipa with your preferred Sideloading service of choice, [SideStore is recommended](https://sidestore.io/)
-
-Follow the README instructions inside **nxnative-shaders.zip**
 
 
 ##  Requirements 
