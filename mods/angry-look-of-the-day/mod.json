@@ -1,0 +1,21 @@
+{
+  "id": "angry-look-of-the-day",
+  "title": "Look of the day is constantly angry (Library of Ruina)",
+  "description": "Fixes the Look of the Day abnormality page (EmotionCardAbility_shyLook) to its anger face, permanent +2 power on every die. Port of the PC Workshop mod Lazy Enemy-Winning Dice Hod Mod (3021015577), for Library of Ruina 1.0.3.",
+  "launcher": {
+    "env": "DM_MOD_ANGRYLOOK",
+    "category": "Quality of Life",
+    "label": "Look of the day is constantly angry",
+    "note": "Look of the day abno page is fixed to its anger state (permanent 2+ power)"
+  },
+  "game": "Library of Ruina 1.0.3",
+  "exefs": "exefs",
+  "expect": {
+    "aeea627ddbd1214764dfef5f965e94a2": {
+      "0x220c520": "52800028",
+      "0x220c0d8": "b9001a60",
+      "0x220c1f8": "b9001a60",
+      "0x220c468": "b9001a60"
+    }
+  }
+}
