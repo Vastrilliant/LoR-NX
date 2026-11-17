@@ -3,6 +3,12 @@ name: Xcode - Build
 on:
   push:
     branches: [main]
+    paths-ignore: 
+    - ".gitattributes"
+    - "docs/**"
+    - "README.md"
+    - ".github/**"
+    
   workflow_dispatch:
     inputs:
       app_name:
