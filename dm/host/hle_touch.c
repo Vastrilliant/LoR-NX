@@ -282,6 +282,30 @@ void dm_key_frame(uint64_t frame, dm_key_frame_t *out) {
 }
 uint32_t dm_key_modifiers(void) { pthread_mutex_lock(&g_ml); uint32_t k = g_kheld; pthread_mutex_unlock(&g_ml); return k; }   // the DM_KEY_* modifiers held now (no latch: nothing is consumed)
 
+#define PAN_ARM_NS 300000000ull
+static float g_pan_x, g_pan_y;
+static _Atomic uint64_t g_pan_arm_ns;
+void dm_touch_pan_arm(int on) {
+    atomic_store_explicit(&g_pan_arm_ns, on ? now_ns() : 0, memory_order_relaxed);
+    if (on) return;
+    pthread_mutex_lock(&g_ml); g_pan_x = g_pan_y = 0; pthread_mutex_unlock(&g_ml);
+}
+int dm_touch_pan_armed(void) {
+    uint64_t t = atomic_load_explicit(&g_pan_arm_ns, memory_order_relaxed);
+    return t && now_ns() - t < PAN_ARM_NS;
+}
+void dm_touch_pan(float dx, float dy) {
+    if (!trackpad_on() || !dm_touch_pan_armed()) return;
+    pthread_mutex_lock(&g_ml); g_pan_x += dx; g_pan_y += dy; pthread_mutex_unlock(&g_ml);
+}
+int dm_touch_pan_pending(void) {
+    pthread_mutex_lock(&g_ml); int r = g_pan_x != 0 || g_pan_y != 0; pthread_mutex_unlock(&g_ml);
+    return r;
+}
+void dm_touch_pan_take(float *dx, float *dy) {
+    pthread_mutex_lock(&g_ml); *dx = g_pan_x; *dy = g_pan_y; g_pan_x = g_pan_y = 0; pthread_mutex_unlock(&g_ml);
+}
+
 // Fills n MouseStates (newest first; entry i has sampling number top - i); returns n, or 0 when the mouse is not connected (not Touchscreen Mode)
 int mouse_fill(void *out, int n, int64_t top) {
     if (!trackpad_on() || n <= 0) return 0;

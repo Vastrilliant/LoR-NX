@@ -53,6 +53,11 @@ void dm_mouse_set(float x, float y);               // puts the cursor at x, y pa
 void dm_mouse_park(void);                            // puts the cursor off the panel (-1, -1), where it hovers over nothing (Touch pointer mode, no finger down); the next dm_mouse_set / dm_mouse_move brings it back
 void dm_mouse_button(uint32_t mask, int down);       // presses or releases the DM_MOUSE_* buttons in mask
 void dm_mouse_wheel(int notches);                    // wheel notches, positive = wheel up (content scrolls toward its top)
+void dm_touch_pan(float dx, float dy);               // Touchscreen Mode camera pan: the finger travel in panel pixels, taken only while a mod has armed it (dm_touch_pan_armed)
+int dm_touch_pan_armed(void);                        // a mod has a pannable camera now (dm_touch_pan_arm renewed within the last 0.3 s)
+void dm_touch_pan_arm(int on);                       // the touch-ui mod: the combat camera can be panned (on) or not (off); renew it, it lapses by itself
+int dm_touch_pan_pending(void);                      // pan travel waiting to be taken
+void dm_touch_pan_take(float *dx, float *dy);        // takes the pan travel (panel pixels) since the last take
 void dm_key_modifier(uint32_t mask, int down);       // presses or releases the DM_KEY_* modifier keys in mask
 void dm_key_press(uint32_t usage, int down);         // presses or releases one other key by its USB usage (DM_KEYCODE_*, 0..255); a press and release between two reads is still reported once
 

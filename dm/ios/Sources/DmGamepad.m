@@ -195,6 +195,7 @@ static void pads_start(void);   // Physical controllers, below
     CGPoint _padStart, _padLast; BOOL _padMoved, _padDead;   // one finger: where it landed / was last applied, moved past the slop, the gesture is over (two fingers were down: nothing more until all lift)
     CGFloat _padScroll, _padScrollY;               // two fingers: vertical travel not yet turned into a notch, their mid point's last y
     CGFloat _padPinch, _padDist;                   // two fingers: change of their distance not yet turned into a zoom notch, their distance at the last move
+    BOOL _padPan, _padHoldPan; CGPoint _padPanLast;
     BOOL _padLeft; NSUInteger _ptParkEpoch;        // one finger: the left button is held by it; counts the cursor's parking (Touch pointer mode)
     NSTimeInterval _pressTime;
     NSTimer *_padTimer; NSUInteger _lmbEpoch;      // the hold timer (Trackpad pointer mode); counts left presses so an old release cannot let go of a newer press
@@ -448,7 +449,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 // Pointer Mode "Touch" (DM_POINTER_MODE=touch, pointer_touch) changes what one finger means, not the key taps or the two-finger wheel: the cursor is put under the finger (dm_mouse_set) when it lands and follows it once it has left the slop;
 // touching down presses the left button at once and lifting lets it go, so holding and moving drags. When no finger is down the cursor is parked off the panel (dm_mouse_park), so nothing stays hovered.
 // Every touch is the touchpad, and there are no key buttons: fingers that land together and lift again without moving are a tap, with three fingers Esc and with two Alt (tsKeyTap:). One finger (Trackpad): it moves the cursor once it has left the slop; lifting it unmoved is a left click, and holding it unmoved for K_TP_HOLD presses the left button until it lifts. Three fingers swiping hold the left button and drag until one lifts. A second finger ends all of that (a button the first finger holds is let go, without a click in Touch mode) and makes the pair a wheel: their mid point's vertical travel
-// turns into notches (down = wheel up, as dragging a page down shows what is above); their distance changing is a zoom, also the wheel (spread = wheel up), and only the one that travels further counts; the gesture stays over until every finger has lifted. Each click, each notch and each key press gives a haptic tap. A third finger does nothing.
+// turns into notches (down = wheel up, as dragging a page down shows what is above); their distance changing is a zoom, also the wheel (spread = wheel up), and only the one that travels further counts; the gesture stays over until every finger has lifted. Each click, each notch and each key press gives a haptic tap. A third finger does nothing. While the touch-ui mod has the combat camera armed (dm_touch_pan_armed), dragging pans the camera instead (dm_touch_pan): one finger in Touch pointer mode, one finger after the hold in Trackpad, and the mid point of two fingers, which no longer scroll the wheel; their pinch still zooms.
 - (CGRect)picture {   // the 16:9 picture that front_ios.m centres in the screen, as pushGame maps touches onto it
     CGRect b = self.bounds; CGFloat w = b.size.width, h = b.size.height;
     if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
@@ -458,6 +459,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 - (void)padHold:(NSTimer *)timer {
     _padTimer = nil;
     if (_pad.count != 1 || _padMoved || _padDead || _padLeft) return;
+    if (dm_touch_pan_armed()) { _padHoldPan = YES; [_touchFeedback impactOccurredWithIntensity:0.6]; [_touchFeedback prepare]; return; }
     [self padPress];
 }
 - (void)padPress {
@@ -495,6 +497,11 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 }
 - (CGPoint)padCentre { CGFloat x = 0, y = 0; for (UITouch *u in _pad) { CGPoint p = [u locationInView:self]; x += p.x; y += p.y; } return CGPointMake(x / _pad.count, y / _pad.count); }
 - (void)padDragEnd { if (!_padDrag) return; _padDrag = NO; _lmbEpoch++; dm_mouse_button(DM_MOUSE_LEFT, 0); }   // fewer than three fingers: the left button goes up
+- (void)padPanTo:(CGPoint)p {
+    CGFloat k = 1280.0 / [self picture].size.width;
+    dm_touch_pan((float)((p.x - _padPanLast.x) * k), (float)((p.y - _padPanLast.y) * k));
+    _padPanLast = p;
+}
 - (CGFloat)padMidY { return ([_pad[0] locationInView:self].y + [_pad[1] locationInView:self].y) / 2; }
 - (CGFloat)padDist { CGPoint a = [_pad[0] locationInView:self], b = [_pad[1] locationInView:self]; return hypot(a.x - b.x, a.y - b.y); }
 - (void)tsBegan:(NSSet<UITouch *> *)ts {
@@ -505,7 +512,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         [_padOrigin setObject:[NSValue valueWithCGPoint:[t locationInView:self]] forKey:t];
         if (_pad.count == 1) {
             _padFirst = CACurrentMediaTime(); _padMost = 1; _padShifted = NO;
-            _padStart = _padLast = [t locationInView:self]; _padMoved = _padDead = _padLeft = NO;
+            _padStart = _padLast = _padPanLast = [t locationInView:self]; _padMoved = _padDead = _padLeft = _padPan = _padHoldPan = NO;
             [self padCancelHold];
             if (pointer_touch()) {
                 _ptParkEpoch++;
@@ -518,6 +525,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
             [self padCancelHold]; _padDrag = NO; _padStart3 = _padLast3 = [self padCentre];
         } else {   // the second finger: no click or hold any more, a wheel instead
             [self padCancelHold]; [self padAbort];
+            _padPan = _padHoldPan = NO; _padPanLast = [self padCentre];
             _padDead = YES; _padScroll = _padPinch = 0; _padScrollY = [self padMidY]; _padDist = [self padDist];
         }
         _padMost = MAX(_padMost, (int)_pad.count);
@@ -534,7 +542,12 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         if (!_padMoved) {
             if (hypot(p.x - _padStart.x, p.y - _padStart.y) <= K_TP_SLOP) return;
             _padMoved = YES; [self padCancelHold];
+            if (dm_touch_pan_armed() && (pointer_touch() || _padHoldPan)) {
+                _padPan = YES;
+                if (pointer_touch()) [self padAbort];
+            }
         }
+        if (_padPan) { [self padPanTo:p]; _padLast = p; return; }
         if (pointer_touch()) { [self ptPlaceCursor:p]; _padLast = p; return; }   // the cursor is under the finger
         CGFloat k = 1280.0 / [self picture].size.width * K_TP_GAIN * touchpad_speed();
         dm_mouse_move((p.x - _padLast.x) * k, (p.y - _padLast.y) * k); _padLast = p;
@@ -552,6 +565,19 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         // Two fingers are a scroll (their mid point moves up or down) or a zoom (they move apart or together), the same in both Pointer Modes. Both are the wheel: a pinch out is wheel up (zoom in).
         // Whichever has travelled further is the one that turns into notches, and the other's travel starts again, so a pinch whose centre drifts does not scroll and a scroll whose fingers drift does not zoom
         CGFloat y = [self padMidY], d = [self padDist];
+        CGPoint c = [self padCentre];
+        if (dm_touch_pan_armed()) {
+            [self padPanTo:c];
+            _padScroll = 0; _padScrollY = y;
+            _padPinch += d - _padDist; _padDist = d;
+            while (fabs(_padPinch) >= K_TP_PINCH) {
+                int n = _padPinch > 0 ? 1 : -1; _padPinch -= n * K_TP_PINCH;
+                dm_mouse_wheel(n);
+                [_scrollFeedback selectionChanged]; [_scrollFeedback prepare];
+            }
+            return;
+        }
+        _padPanLast = c;
         _padScroll += y - _padScrollY; _padScrollY = y;
         _padPinch += d - _padDist; _padDist = d;
         if (fabs(_padPinch) >= K_TP_PINCH && fabs(_padPinch) > fabs(_padScroll)) {
@@ -576,7 +602,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         if (![_pad containsObject:t]) continue;
         if (_pad.count == 1) {   // the last finger lifts
             [self padCancelHold];
-            BOOL held = _padLeft, tap = !_padMoved && !_padDead && !cancelled;
+            BOOL held = _padLeft || _padHoldPan, tap = !_padMoved && !_padDead && !cancelled;
             if (_padLeft) [self padRelease];
             if (pointer_touch()) [self ptParkSoon];
             else if (tap && !held) [self padClick];
@@ -606,7 +632,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     [self padCancelHold];
     for (int k = 0; k < TS_N; k++) { _keyEpoch[k]++; if (_keyDown[k]) { _keyDown[k] = NO; ts_key(k, 0); } }
     if (touchscreen_mode()) { _lmbEpoch++; dm_mouse_button(DM_MOUSE_LEFT, 0); }
-    _padLeft = NO;
+    _padLeft = NO; _padPan = _padHoldPan = NO;
     if (pointer_touch()) dm_mouse_park();
     _padDrag = NO;
     [_pad removeAllObjects]; [_padOrigin removeAllObjects]; _padMoved = _padDead = _padShifted = NO;
