@@ -691,12 +691,14 @@ static int on_cursor_icall(const char *name, uint64_t *r) {
 #define PAN_SIGN_X 1.0f
 #define PAN_SIGN_Y 1.0f
 #define PAN_ARM_MS 100u
+#define PAN_BLOCKED_MS 500u
 
 typedef struct { float x, y, z; } vec3;
 
 static void *s_zoom_cam;
 static int s_zoom_notches;
 static uint64_t s_pan_check_ms;
+static uint64_t s_pan_off_until_ms;
 
 static void *singleton_of(uint32_t method_slot) {
     void **slot = *(void ***)(main_base() + method_slot);
@@ -736,10 +738,10 @@ static void cam_zoom_run(uint64_t *r, int p) {
     void *main_cam = *(void **)(cam + F_CAM_MAIN);
     if (!main_cam || cam_zoom_blocked()) {
         dm_touch_pan_arm(0);
+        s_pan_off_until_ms = now_ms() + PAN_BLOCKED_MS;
         return;
     }
     float ortho = ((float (*)(void *, void *))(main_base() + K_CAMERA_GET_ORTHO))(main_cam, NULL);
-    dm_touch_pan_arm(1);
     cam_pan_apply(cam, ortho);
     if (!s_zoom_notches) return;
     float lo = *(float *)(cam + F_CAM_MIN_ORTHO), hi = *(float *)(cam + F_CAM_STD_ORTHO);
@@ -763,8 +765,11 @@ static void on_cam_late(uint64_t *r, int p) {
     }
     int notches = frame_now().wheel;
     uint64_t t = now_ms();
-    if (!notches && !dm_touch_pan_pending() && t - s_pan_check_ms < PAN_ARM_MS) return;
-    s_pan_check_ms = t;
+    if (t - s_pan_check_ms >= PAN_ARM_MS) {
+        s_pan_check_ms = t;
+        if (t >= s_pan_off_until_ms) dm_touch_pan_arm(1);
+    }
+    if (!notches && !dm_touch_pan_pending()) return;
     s_zoom_cam = cam;
     s_zoom_notches = notches;
     dm_mod_gate_run(r, p, cam_zoom_run);
