@@ -13,13 +13,15 @@
 #include "haptics_apple.h"
 #include "save_sync.h"
 #import "CloudSaves.h"
+#import "ShaderDownload.h"
+#include "DmSetup.h"
 
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
 void dm_gamepad_active(void);
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
-const char *front_ios_boot_message(void);   // main.m: why a build that keeps the game files off the IPA found none usable (NULL = the generic hint)
+const char *front_ios_boot_message(void);   // main.m: what the setup screen says (DmSetup.h has the problems behind it; NULL = the generic hint)
 bool dm_show_launcher(void *view_controller, void (*done)(void));   // Launcher.swift: false = no launcher (no dm/launcher.json, or DM_LAUNCHER=0)
 
 static CAMetalLayer *g_layer;
@@ -62,6 +64,7 @@ static void tv_attach(void);
 @property (nonatomic, strong) DmGameView *game;
 @property (nonatomic, strong) UIView *pad;
 @property (nonatomic, strong) UILabel *fps;
+@property (nonatomic, strong) UILabel *setupLabel;   // the setup screen's text; tapping the screen offers the fix again
 @property (nonatomic) BOOL launched;
 @property (nonatomic, strong) id tv;   // the TV scene accessory's registration (iOS 27)
 - (void)startGame;
@@ -74,13 +77,14 @@ static void launcher_done(void) { [g_root startGame]; }
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
     front_ios_power_watch();
-    if (!front_ios_boot_ok()) {   // No game files: show a hint and do not start the host
+    if (!front_ios_boot_ok()) {   // The shader libraries or the game files are not usable: say which, offer the fix (viewDidAppear), and do not start the host
         UILabel *lb = [[UILabel alloc] initWithFrame:CGRectInset(self.view.bounds, 40, 40)];
         lb.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         lb.numberOfLines = 0; lb.textAlignment = NSTextAlignmentCenter; lb.textColor = UIColor.whiteColor;
-        const char *why = front_ios_boot_message();
-        lb.text = why ? [NSString stringWithFormat:@"%s%s", !strncmp(why, "Shader libraries", 16) ? "" : "Game files unusable.\n", why] : @"Game files not found.\nPut the RomFS folder into this App's Documents as \"romfs\" (Files app), then restart.";
-        [self.view addSubview:lb]; return;
+        self.setupLabel = lb; [self refreshSetupLabel];
+        [self.view addSubview:lb];
+        [self.view addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(presentSetupPrompt)]];   // after the prompt was dismissed
+        return;
     }
     front_ios_audio_watch();
 #if defined(__IPHONE_27_0)   // compiled only with an SDK that has the scene accessory API
@@ -127,16 +131,64 @@ static void launcher_done(void) { [g_root startGame]; }
 }
 - (void)viewDidAppear:(BOOL)a {
     [super viewDidAppear:a];
-    if (!front_ios_boot_ok() && !self.presentedViewController) {   // the game file image is missing or another version (main.m): offer to import one
-        const char *why = front_ios_boot_message(); BOOL shaders = why && !strncmp(why, "Shader libraries", 16);   // not the game files: the import offer does not apply
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:shaders ? @"Shader libraries" : @"Game files" message:why ? @(why) : @"Game files not found. Import the RomFS image (.img), or put the RomFS folder into this App's Documents as \"romfs\" (Files app)." preferredStyle:UIAlertControllerStyleAlert];
-        if (!shaders) [a addAction:[UIAlertAction actionWithTitle:@"Import image" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; [self importImage]; }]];
-        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:a animated:YES completion:nil];
-    }
+    [self presentSetupPrompt];   // nothing when the game can start
     if (self.launched || !front_ios_boot_ok()) return;
     self.launched = YES; g_root = self;
     if (!dm_show_launcher((__bridge void *)self, launcher_done)) [self startGame];   // the settings screen first (Launcher.swift), when the app has one
+}
+// The setup screen: what is missing (main.m, DmSetup.h) as an alert with the fix the app can offer. Shaders: download them (ShaderDownload.m). RomFS: the player has to get it, so
+// the alert offers the Files picker and, when the image is missing, the repository's README. The text on the screen stays after the alert is dismissed; a tap brings the alert back
+- (void)refreshSetupLabel {
+    const char *why = front_ios_boot_message();
+    self.setupLabel.text = why ? @(why) : @"Game files not found.\nPut the RomFS folder into this App's Documents as \"romfs\" (Files app), then restart.";
+}
+- (void)presentSetupPrompt {
+    if (front_ios_boot_ok() || self.presentedViewController) return;
+    int p = front_ios_setup_problem(); const char *why = front_ios_boot_message();
+    BOOL shaders = p == DM_SETUP_SHADERS_MISSING || p == DM_SETUP_SHADERS_INCOMPLETE || p == DM_SETUP_SHADERS_OTHER_BUILD;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:shaders ? @"Shader libraries" : @"Game files"
+        message:why ? @(why) : @"Game files not found. Import the RomFS image (.img), or put the RomFS folder into this App's Documents as \"romfs\" (Files app)." preferredStyle:UIAlertControllerStyleAlert];
+    if (shaders) {
+        [a addAction:[UIAlertAction actionWithTitle:p == DM_SETUP_SHADERS_MISSING ? @"Download" : @"Redownload" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; [self downloadShaders]; }]];
+        [a addAction:[UIAlertAction actionWithTitle:@"Not now" style:UIAlertActionStyleCancel handler:nil]];
+    } else {
+        if (p != DM_SETUP_ROMFS_ZIPPED && p != DM_SETUP_ROMFS_7Z) [a addAction:[UIAlertAction actionWithTitle:@"Import image" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; [self importImage]; }]];
+        if (p == DM_SETUP_ROMFS_MISSING) [a addAction:[UIAlertAction actionWithTitle:@"Open README" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+            (void)x; [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/Vastrilliant/LoR-NX#readme"] options:@{} completionHandler:nil]; }]];
+        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    }
+    [self presentViewController:a animated:YES completion:nil];
+}
+// "Download" / "Redownload": fetch the release's shader libraries into Documents/msl. The host starts from main.m's checks, so the app is opened again afterwards; a RomFS still missing is raised right away
+- (void)downloadShaders {
+    UIAlertController *busy = [UIAlertController alertControllerWithTitle:@"Shader libraries" message:@"Downloading..." preferredStyle:UIAlertControllerStyleAlert];
+    __block BOOL cancelled = NO;
+    [busy addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { (void)x; cancelled = YES; dm_shader_download_cancel(); }]];
+    [self presentViewController:busy animated:YES completion:^{
+        NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
+        __weak UIAlertController *wbusy = busy;
+        dm_shader_download(doc, ^(NSString *phase, double f) {
+            wbusy.message = f >= 0 ? [NSString stringWithFormat:@"%@ %d%%", phase, (int)(f * 100)] : [phase stringByAppendingString:@"..."];
+        }, ^(NSError *err) {
+            void (^after)(void) = ^{
+                if (cancelled || (err && [err.domain isEqualToString:NSURLErrorDomain] && err.code == NSURLErrorCancelled)) return;   // the player's own Cancel: back to the screen
+                if (err) {
+                    UIAlertController *f = [UIAlertController alertControllerWithTitle:@"Download failed" message:err.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
+                    [f addAction:[UIAlertAction actionWithTitle:@"Try again" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; [self downloadShaders]; }]];
+                    [f addAction:[UIAlertAction actionWithTitle:@"Not now" style:UIAlertActionStyleCancel handler:nil]];
+                    [self presentViewController:f animated:YES completion:nil]; return;
+                }
+                int p = front_ios_setup_recheck(); [self refreshSetupLabel];
+                if (p == DM_SETUP_SHADERS_OTHER_BUILD || p == DM_SETUP_SHADERS_INCOMPLETE || p == DM_SETUP_SHADERS_MISSING) {
+                    [self importDone:@"Shader libraries" message:@"The downloaded shader libraries do not match this app. Install the app (nxnative.ipa) from the same release as the shader libraries, then try again."]; return;
+                }
+                if (p) { [self presentSetupPrompt]; return; }   // the shaders are in; the RomFS is next
+                [self importDone:@"Shader libraries installed" message:@"Close the app and open it again to continue."];
+            };
+            if (cancelled) { after(); return; }   // Cancel already dismissed the alert
+            [busy dismissViewControllerAnimated:YES completion:after];
+        });
+    }];
 }
 // "Import image" in the Game files alert: pick a RomFS image (.img only) in the Files app and move it to Documents/romfs.img, where main.m looks for it at the next start
 - (void)importImage {

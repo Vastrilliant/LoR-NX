@@ -359,7 +359,7 @@ jobs:
           cp -Rc "$SHADERS" "$stage_sh/msl" 2>/dev/null || cp -R "$SHADERS" "$stage_sh/msl"
           cp .github/assets/shaders-README.txt "$stage_sh/README.txt"
           if [ "$RELEASE" = "true" ]; then
-            (cd "$stage_sh" && zip -0 -r -q -X "$out/nxnative-shaders.zip" .)
+            (cd "$stage_sh" && zip -9 -r -X -q "$out/nxnative-shaders.zip" msl README.txt)
             echo "SHADER_OUT=$out/nxnative-shaders.zip" >> "$GITHUB_ENV"
           else
             echo "SHADER_OUT=$stage_sh" >> "$GITHUB_ENV"
@@ -422,8 +422,7 @@ jobs:
           gh release create "$tag" "${files[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "LoR NX v${LOR_VERSION} (build ${GITHUB_RUN_NUMBER})" \
-            --notes "nxnative.ipa and nxnative-shaders.zip (the msl folder and a README with install instructions). romfs.img, when the build uploads it, is an encrypted artifact of the run, not a release asset."
+            --title "LoR NX v${LOR_VERSION} (build ${GITHUB_RUN_NUMBER})"
           echo "Release: $tag" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Logs on failure

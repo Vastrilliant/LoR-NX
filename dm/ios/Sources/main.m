@@ -12,6 +12,7 @@
 #include "front.h"
 #include "romfs_image.h"
 #include "romfs_identity.h"
+#include "DmSetup.h"
 #include "player_env.h"
 #import "DonatedHeap.h"
 #ifndef DM_PLAYER_BUILD
@@ -101,7 +102,7 @@ const char *front_ios_boot_message(void) { return g_boot_message[0] ? g_boot_mes
 
 // Shader libraries: <App>/msl/<b-chain | vk | gl>, or, in a build made with DM_COPY_SHADERS=NO (scripts/push_shaders.sh), Documents/msl. Such a build carries <App>/msl.id, one line
 // (DMMSLID1 files=<count> bytes=<size> tree=<hash>, dm/tools/msl_id.py), and no msl/: only a Documents/msl with the same msl.id whose files add up to that count and size is used, so a
-// copy cut off partway or the shaders of another build are refused, as for romfs.img. A build with msl/ in the app (no msl.id) always uses it. Returns the folder, or nil with the reason in g_boot_message
+// copy cut off partway or the shaders of another build are refused, as for romfs.img. A build with msl/ in the app (no msl.id) always uses it. Returns the folder, or nil with the problem in *problem (DmSetup.h)
 static NSString *msl_id_line(NSString *path) {
     NSString *t = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
     return [t stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -120,23 +121,91 @@ static int msl_tree_matches(NSString *root, NSString *line) {   // the files und
     }
     return files == want_files && bytes == want_bytes;
 }
-static NSString *msl_locate(NSString *doc, NSString *res) {
+static int msl_has_files(NSString *dir) {   // anything but hidden files (.DS_Store and the like)
+    for (NSString *n in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]) if (![n hasPrefix:@"."]) return 1;
+    return 0;
+}
+static NSString *msl_locate(NSString *doc, NSString *res, int *problem) {
+    *problem = DM_SETUP_OK;
     NSString *bundled = [res stringByAppendingPathComponent:@"msl"], *want = msl_id_line([res stringByAppendingPathComponent:@"msl.id"]);
     if (!want.length) return bundled;
     NSString *dir = [doc stringByAppendingPathComponent:@"msl"], *got = msl_id_line([dir stringByAppendingPathComponent:@"msl.id"]);
-    const char *why = !got.length ? "has no msl.id (not copied, or cut off before the end)" : ![got isEqualToString:want] ? "is the shader set of another build" : !msl_tree_matches(dir, want) ? "is incomplete (a copy that stopped partway)" : NULL;
-    if (!why) return dir;
-    snprintf(g_boot_message, sizeof g_boot_message, "Shader libraries: Documents/msl %s. This build keeps its shaders out of the app: copy the msl folder of the same build to the app's Documents (scripts/push_shaders.sh, or the Files app), then restart.", why);
-    fprintf(stderr, "[RED] boot: %s (wanted: %s)\n", g_boot_message, want.UTF8String);
+    const char *why = NULL;
+    if (!msl_has_files(dir)) { *problem = DM_SETUP_SHADERS_MISSING; why = "is missing"; }
+    else if (!got.length) { *problem = DM_SETUP_SHADERS_INCOMPLETE; why = "has no msl.id (not copied, or cut off before the end)"; }
+    else if (![got isEqualToString:want]) { *problem = DM_SETUP_SHADERS_OTHER_BUILD; why = "is the shader set of another build"; }
+    else if (!msl_tree_matches(dir, want)) { *problem = DM_SETUP_SHADERS_INCOMPLETE; why = "is incomplete (a copy that stopped partway)"; }
+    else return dir;
+    fprintf(stderr, "[RED] boot: Shader libraries: Documents/msl %s (wanted: %s)\n", why, want.UTF8String);
     return nil;
 }
-static void romfs_identity_report(NSString *doc) {
+
+// RomFS: why romfs_locate found nothing. A zip is told apart from a cut-off image by its first bytes (a zip begins "PK"), so a player who downloaded the archive and never unpacked it is told so
+static int file_magic(NSString *path, const uint8_t *magic, size_t n) {   // the file begins with these bytes
+    int fd = open(path.fileSystemRepresentation, O_RDONLY); if (fd < 0) return 0;
+    uint8_t h[8]; ssize_t got = pread(fd, h, n, 0); close(fd);
+    return got == (ssize_t)n && !memcmp(h, magic, n);
+}
+static int file_is_7z(NSString *path) { static const uint8_t m[6] = {0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C}; return file_magic(path, m, sizeof m); }   // also true for an encrypted one (its header is encrypted, the signature is not)
+static int file_is_zip(NSString *path) {
+    int fd = open(path.fileSystemRepresentation, O_RDONLY); if (fd < 0) return 0;
+    uint8_t h[4]; ssize_t n = pread(fd, h, sizeof h, 0); close(fd);
+    return n == 4 && h[0] == 'P' && h[1] == 'K' && ((h[2] == 3 && h[3] == 4) || (h[2] == 5 && h[3] == 6) || (h[2] == 7 && h[3] == 8));
+}
+static int romfs_diagnose(NSString *doc) {
+    NSArray<NSString *> *imgs = romfs_document_images(doc);
+    for (NSString *img in imgs) { if (file_is_zip(img)) return DM_SETUP_ROMFS_ZIPPED; if (file_is_7z(img)) return DM_SETUP_ROMFS_7Z; }
+    if (imgs.count) return DM_SETUP_ROMFS_CORRUPT;   // there, but cut off, invalid or another version (the log line below says which)
+    for (NSString *n in [NSFileManager.defaultManager contentsOfDirectoryAtPath:doc error:nil]) {   // the archive itself, not yet unpacked
+        NSString *l = n.lowercaseString;
+        if ([l isEqualToString:@"romfs.zip"] || [l isEqualToString:@"romfs.img.zip"]) return DM_SETUP_ROMFS_ZIPPED;
+        if ([l isEqualToString:@"romfs.7z"] || [l isEqualToString:@"romfs.img.7z"]) return DM_SETUP_ROMFS_7Z;
+    }
+    return DM_SETUP_ROMFS_MISSING;
+}
+static void romfs_identity_report(NSString *doc) {   // the detailed verdict (sizes, index hash, the push_romfs.sh command) goes to the log only; the screen has the short texts of setup_text
     romfs_id want, got;
     int rc = romfs_id_check([NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs.id"].fileSystemRepresentation,
                             (romfs_document_images(doc).firstObject ?: [doc stringByAppendingPathComponent:@"romfs.img"]).fileSystemRepresentation, &want, &got);
     if (rc == ROMFS_ID_OK || rc == ROMFS_ID_NONE) return;
-    romfs_id_message(rc, &want, &got, NSBundle.mainBundle.bundleIdentifier.UTF8String ?: "<bundle ID>", g_boot_message, sizeof g_boot_message);
-    fprintf(stderr, "[RED] boot: %s\n", g_boot_message);
+    char detail[640]; romfs_id_message(rc, &want, &got, NSBundle.mainBundle.bundleIdentifier.UTF8String ?: "<bundle ID>", detail, sizeof detail);
+    fprintf(stderr, "[RED] boot: %s\n", detail);
+}
+
+// The sha256 of the RomFS.img the app is made for (the file, not the packed index that romfs.id covers): shown with the corrupt-image message, so a player can check a download
+#define DM_ROMFS_SHA256 "6ba453130b0a45d12fc02355a71488f44d2099d5611398c6484f53e7c815a0f9"
+static const char *setup_text(int problem) {
+    switch (problem) {
+    case DM_SETUP_SHADERS_MISSING: return "The game's shader libraries are missing, download them?";
+    case DM_SETUP_SHADERS_INCOMPLETE: return "The game's shader libraries are incomplete, redownload them? This will replace the current ones";
+    case DM_SETUP_SHADERS_OTHER_BUILD: return "The game's shader libraries are from a different build of this app, redownload them? This will replace the current ones";
+    case DM_SETUP_ROMFS_MISSING: return "The RomFS.img file is missing, please read the repository's README on how to obtain it";
+    case DM_SETUP_ROMFS_CORRUPT: return "The RomFS is present but appears to be corrupted.\nExpected sha256 checksum: " DM_ROMFS_SHA256 "\n\nRedownload the image and try again.";
+    case DM_SETUP_ROMFS_ZIPPED: return "The RomFS is present but it appears to be zipped, please unzip the file first and try again.";
+    case DM_SETUP_ROMFS_7Z: return "The RomFS is present but it appears to be a 7z archive, please extract the file first and try again.";
+    default: return NULL;
+    }
+}
+
+// What the app still needs before the game can start, looked at in Documents (and the app). The shaders are named first when both are missing: the download is the one fix the app does itself.
+// Sets g_setup_problem and g_boot_message; the paths are returned for boot_env
+static int g_setup_problem;
+int front_ios_setup_problem(void) { return g_setup_problem; }
+static void setup_check(NSString *doc, NSString *res, NSString **romfs_out, NSString **msl_out) {
+    int romfs_problem = DM_SETUP_OK, msl_problem = DM_SETUP_OK;
+    NSString *romfs = romfs_locate();
+    if (!romfs) { romfs_problem = romfs_diagnose(doc); romfs_identity_report(doc); fprintf(stderr, "boot: game files not found (Documents/romfs.img, Documents/romfs or <App>/romfs)\n"); }
+    NSString *msl = getenv("DM_MSL_DIR") ? @(getenv("DM_MSL_DIR")) : msl_locate(doc, res, &msl_problem);   // a DM_MSL_DIR set at launch or by an env file wins
+    g_setup_problem = msl_problem ? msl_problem : romfs_problem;
+    const char *text = setup_text(g_setup_problem);
+    snprintf(g_boot_message, sizeof g_boot_message, "%s", text ? text : "");
+    if (text) fprintf(stderr, "[RED] boot: setup: %s\n", text);
+    *romfs_out = romfs; *msl_out = msl;
+}
+int front_ios_setup_recheck(void) {
+    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0], *romfs, *msl;
+    setup_check(doc, NSBundle.mainBundle.resourcePath, &romfs, &msl);
+    return g_setup_problem;
 }
 
 static int boot_env(void) {
@@ -191,16 +260,15 @@ static int boot_env(void) {
     id<MTLDevice> gpu = MTLCreateSystemDefaultDevice();   // the system default device, the one the graphics layers take (mtl_init tells the format table about it for the other routes)
     // A GPU without BC textures (the A16 and older) is no longer refused: BC textures are transcoded to ASTC on upload (dm/gfx/tex/README.md, BC_ASTC_PLAN.md). mtl_init logs the same
     fprintf(stderr, "boot: GPU %s, BC textures %s\n", gpu ? gpu.name.UTF8String : "none", gpu.supportsBCTextureCompression ? "native (transcoded to ASTC as well)" : "not supported (transcoded to ASTC)");
-    NSString *romfs = romfs_locate();
-    if (!romfs) { romfs_identity_report(doc); fprintf(stderr, "boot: game files not found (Documents/romfs.img, Documents/romfs or <App>/romfs)\n"); return 0; }
+    NSString *romfs, *msl;
+    setup_check(doc, res, &romfs, &msl);
+    if (g_setup_problem) return 0;   // the screen says what is missing and offers the fix (front_ios.m, front_ios_boot_message)
     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
     setenv("DM_ROMFS", romfs.fileSystemRepresentation, 0);
     setenv("DM_SAVE", [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation, 0);
     setenv("DM_TEMP", [doc stringByAppendingPathComponent:@"temp"].fileSystemRepresentation, 0);
     NSString *dm = [res stringByAppendingPathComponent:@"dm"];
     setenv("DM_NVN_SHMAP", [dm stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
-    NSString *msl = getenv("DM_MSL_DIR") ? @(getenv("DM_MSL_DIR")) : msl_locate(doc, res);   // a DM_MSL_DIR set at launch or by an env file wins
-    if (!msl) return 0;   // a build without its shaders in the app and no matching Documents/msl: the screen says so (front_ios_boot_message)
     fprintf(stderr, "boot: shader libraries %s\n", msl.fileSystemRepresentation);
     setenv("DM_MSL_DIR", msl.fileSystemRepresentation, 0);
     setenv("DM_FONT_DIR", [dm stringByAppendingPathComponent:@"font"].fileSystemRepresentation, 0);   // Shared-font stand-ins (standard.ttf / nintendo_ext.ttf): iOS lacks the macOS font path
