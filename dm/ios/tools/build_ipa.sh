@@ -15,6 +15,7 @@
 #   DM_METAL_CAPTURE=1 makes a development build that can write GPU frame captures (MetalCaptureEnabled in Info.plist, for the host's DM_GPU_CAPTURE switch);
 #   DM_SHOW_FPS=1 turns the frame-rate counter on (DMShowFPS in Info.plist; DM_SHOW_FPS in the app's Documents/env.txt overrides it on the phone);
 #   DM_LANG=<language code> is the game language (DMLanguage in Info.plist, default en-US; DM_LANG in the app's Documents/env.txt overrides it on the phone);
+#   DM_REPOSITORY=<owner/name> is the GitHub repository the app downloads its shader libraries from and checks for updates (DMRepository in Info.plist; default: GITHUB_REPOSITORY, else the origin remote), DM_BUILD_NUMBER the build number compared with the release tag's suffix (DMBuildNumber; default GITHUB_RUN_NUMBER);
 #   both are also the launcher's defaults (dm/launcher.json from dm/games/settings.py; the player's choice there wins over them, Documents/env.txt over the choice);
 #   the IPA name, code modules, RomFS marker and shader tables come from the game profile
 set -u
@@ -155,6 +156,17 @@ COMMIT=$(git -C "$DM" rev-parse --short=12 HEAD 2> /dev/null) && { [ -z "$(git -
 case "$MSLDIR" in b-*) /usr/libexec/PlistBuddy -c "Add :DMChain string ${MSLDIR#b-}" Gen/Info.plist > /dev/null || die "DMChain";; esac
 NX_VERSION=$(python3 "$DM/../scripts/version.py" show) || die "VERSION: not a semantic version"
 /usr/libexec/PlistBuddy -c "Add :NXVersion string $NX_VERSION" Gen/Info.plist > /dev/null || die "NXVersion"; t "nxnative: v$NX_VERSION"
+# DMRepository / DMBuildNumber: the GitHub repository the app downloads its shader libraries from and checks for updates (DmRepo.m, UpdateCheck.m), resolved here so a fork's build points at the fork.
+# DM_REPOSITORY=owner/name wins, then GITHUB_REPOSITORY (GitHub Actions), then the checkout's origin remote; DM_BUILD_NUMBER (else GITHUB_RUN_NUMBER) is the release workflow's run number, the suffix of the release tag
+REPO_SLUG=${DM_REPOSITORY:-${GITHUB_REPOSITORY:-}}
+if [ -z "$REPO_SLUG" ]; then
+  REPO_SLUG=$(git -C "$DM" remote get-url origin 2> /dev/null | sed -nE 's#^(https?://([^/@]+@)?|ssh://([^/@]+@)?|[^/@:]+@)github\.com[:/]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/?$#\4#p' | sed -E 's#\.git$##')
+  [ -n "$REPO_SLUG" ] || { REPO_SLUG=Vastrilliant/LoR-NX; t "no GitHub origin remote and no DM_REPOSITORY: the app will use $REPO_SLUG"; }
+fi
+[[ "$REPO_SLUG" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "DM_REPOSITORY must look like owner/name: $REPO_SLUG"
+/usr/libexec/PlistBuddy -c "Add :DMRepository string $REPO_SLUG" Gen/Info.plist > /dev/null || die "DMRepository"; t "repository: $REPO_SLUG (shader download, update check)"
+BUILD_NO=${DM_BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-}}
+if [[ "$BUILD_NO" =~ ^[0-9]+$ ]]; then /usr/libexec/PlistBuddy -c "Add :DMBuildNumber string $BUILD_NO" Gen/Info.plist > /dev/null || die "DMBuildNumber"; t "build number: $BUILD_NO"; fi
 # DM_METAL_CAPTURE=1: a development build that may write GPU frame captures (MetalCaptureEnabled; the host's DM_GPU_CAPTURE switch writes them to Documents/gpu_captures)
 if [ "${DM_METAL_CAPTURE:-0}" = 1 ]; then /usr/libexec/PlistBuddy -c "Add :MetalCaptureEnabled bool true" Gen/Info.plist > /dev/null || die "MetalCaptureEnabled"; t "Metal frame capture: enabled (DM_METAL_CAPTURE=1)"; fi
 DM_RESOURCE_BUILD=${PKG:-} GAME=$GAME python3 tools/gen_resources.py "$IOS" "$ROMFS" "$MARKER" "$MSL_IOS/$MSLDIR" "$MSLDIR" "$AOC" "$XCODE_DD" "$DM/gfx/nvn/dmsh_chain.h" "$PSO" || die "generate Xcode resource paths"

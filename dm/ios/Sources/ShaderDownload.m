@@ -1,14 +1,15 @@
-// Shader library download for the setup screen: fetch nxnative-shaders.zip from the repository's latest release, unpack its msl/ folder (the README beside it is dropped) and move
+// Shader library download for the setup screen: fetch nxnative-shaders.zip from the latest release of the repository the app was built from (DmRepo.h), unpack its msl/ folder (the README beside it is dropped) and move
 // that folder to Documents/msl, replacing the one there. main.m (msl_locate) then decides whether the set is the right one for this build.
 // The release's zip is written with `zip -0` (stored, .github/workflows/build.yml), but entries that are deflated are read as well. Zip64 archives are not (the asset stays under 2 GiB).
 #import "ShaderDownload.h"
+#import "DmRepo.h"
 #import <compression.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
-static NSString *const kShadersURL = @"https://github.com/Vastrilliant/LoR-NX/releases/latest/download/nxnative-shaders.zip";
+static NSURL *shaders_url(void) { return dm_repo_url(@"releases/latest/download/nxnative-shaders.zip"); }   // the repository this app was built from (DmRepo.h), not a fixed one: a fork downloads its own release
 static NSString *const kErrorDomain = @"DmShaderDownload";
 static volatile int g_cancel;   // set by dm_shader_download_cancel, read by the unpacking loops
 
@@ -203,8 +204,8 @@ void dm_shader_download(NSString *documents, DmShaderProgress progress, void (^d
     c.timeoutIntervalForRequest = 30; c.timeoutIntervalForResource = 3600; c.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
     NSOperationQueue *q = [NSOperationQueue new]; q.maxConcurrentOperationCount = 1;
     d.session = [NSURLSession sessionWithConfiguration:c delegate:d delegateQueue:q];
-    d.task = [d.session downloadTaskWithURL:[NSURL URLWithString:kShadersURL]];
-    fprintf(stderr, "boot: downloading shader libraries (%s)\n", kShadersURL.UTF8String);
+    d.task = [d.session downloadTaskWithURL:shaders_url()];
+    fprintf(stderr, "boot: downloading shader libraries (%s)\n", shaders_url().absoluteString.UTF8String);
     [d.task resume];
     progress(@"Downloading", -1);
 }

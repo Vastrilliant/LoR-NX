@@ -14,6 +14,8 @@
 #include "save_sync.h"
 #import "CloudSaves.h"
 #import "ShaderDownload.h"
+#import "UpdateCheck.h"
+#import "DmRepo.h"
 #include "DmSetup.h"
 
 UIView *dm_gamepad_view(CGRect frame);
@@ -69,6 +71,7 @@ static void tv_attach(void);
 @property (nonatomic, strong) id tv;   // the TV scene accessory's registration (iOS 27)
 - (void)startGame;
 - (void)importImage;
+- (void)checkForUpdate;
 @end
 static DmRootVC *g_root;
 static void launcher_done(void) { [g_root startGame]; }
@@ -135,6 +138,22 @@ static void launcher_done(void) { [g_root startGame]; }
     if (self.launched || !front_ios_boot_ok()) return;
     self.launched = YES; g_root = self;
     if (!dm_show_launcher((__bridge void *)self, launcher_done)) [self startGame];   // the settings screen first (Launcher.swift), when the app has one
+    else [self checkForUpdate];   // only while the launcher is up: an alert over the running game would be in the way
+}
+// "An update is available": the repository the app was built from (DmRepo.h) has a newer release (UpdateCheck.m). The answer arrives after the network round trip, so it goes on top of whatever is
+// showing (the launcher, a sheet inside it); not when the game has started or another alert is up. "Update" opens the release page, "Skip This Version" silences that release only
+- (void)checkForUpdate {
+    __weak DmRootVC *weakSelf = self;
+    dm_update_check(^(NSString *tag, NSString *latest, NSString *current, NSURL *page) {
+        DmRootVC *me = weakSelf; if (!me || me.game) return;
+        UIViewController *top = me; while (top.presentedViewController) top = top.presentedViewController;
+        if ([top isKindOfClass:UIAlertController.class] || top.isBeingDismissed) return;
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"An update is available" message:[NSString stringWithFormat:@"%@ is out, this app is %@.", latest, current] preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Update" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; [UIApplication.sharedApplication openURL:page options:@{} completionHandler:nil]; }]];
+        [a addAction:[UIAlertAction actionWithTitle:@"Skip This Version" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) { (void)x; dm_update_skip(tag); }]];
+        [a addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
+        [top presentViewController:a animated:YES completion:nil];
+    });
 }
 // The setup screen: what is missing (main.m, DmSetup.h) as an alert with the fix the app can offer. Shaders: download them (ShaderDownload.m). RomFS: the player has to get it, so
 // the alert offers the Files picker and, when the image is missing, the repository's README. The text on the screen stays after the alert is dismissed; a tap brings the alert back
@@ -154,7 +173,7 @@ static void launcher_done(void) { [g_root startGame]; }
     } else {
         if (p != DM_SETUP_ROMFS_ZIPPED && p != DM_SETUP_ROMFS_7Z) [a addAction:[UIAlertAction actionWithTitle:@"Import image" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; [self importImage]; }]];
         if (p == DM_SETUP_ROMFS_MISSING) [a addAction:[UIAlertAction actionWithTitle:@"Open README" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-            (void)x; [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/Vastrilliant/LoR-NX#readme"] options:@{} completionHandler:nil]; }]];
+            (void)x; [UIApplication.sharedApplication openURL:dm_repo_url(@"#readme") options:@{} completionHandler:nil]; }]];
         [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
     }
     [self presentViewController:a animated:YES completion:nil];

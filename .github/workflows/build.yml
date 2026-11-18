@@ -47,6 +47,8 @@ permissions:
 env:
   DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
   UPLOAD_URL: ${{ secrets.UPLOAD_URL }}
+  DM_REPOSITORY: ${{ github.repository }}   # the app downloads its shaders from, and checks for updates in, the repository that built it (a fork's own releases)
+  DM_BUILD_NUMBER: ${{ github.run_number }}   # the release tag's suffix (nxnative-v<version>-<run number>), compared by the update check
   ASTCENC_TAG: "5.7.0"
   ASTCENC_COMMIT: baff485b0ff36d2f95d28961605106502c653966
 
