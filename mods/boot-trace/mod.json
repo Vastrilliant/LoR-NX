@@ -1,0 +1,55 @@
+{
+  "id": "boot-trace",
+  "title": "Boot Trace (Library of Ruina)",
+  "description": "Log-only trace of the loading screen before the opening AMV: when each wait of EntryScene.WaitForAddressableManagerInit ends, the status of every Addressables load, and how long the auto-save notice waits for the opening to load. Changes nothing in the game.",
+  "launcher": {
+    "env": "DM_MOD_BOOTTRACE",
+    "category": "Debugging",
+    "label": "Boot Trace",
+    "note": "Writes the progress of the startup loading screen to log.txt. Mod for debugging purposes only.",
+    "default": "1"
+  },
+  "game": "Library of Ruina 1.0.3",
+  "gates": [
+    "wait_addressables",
+    "wait_global",
+    "wait_done",
+    "load_status",
+    "opening_wait"
+  ],
+  "host": "host.c",
+  "obs": {
+    "aeea627ddbd1214764dfef5f965e94a2": [
+      {
+        "gate": "wait_addressables",
+        "offset": "0x2111404",
+        "word": "12800008",
+        "reason": "EntryScene.<WaitForAddressableManagerInit>d__25.MoveNext, state 1 entry (mov w8,#-1): the first WaitUntil, AddressableManager._init, has ended"
+      },
+      {
+        "gate": "wait_global",
+        "offset": "0x2111320",
+        "word": "12800008",
+        "reason": "EntryScene.<WaitForAddressableManagerInit>d__25.MoveNext, state 2 entry (mov w8,#-1): the second WaitUntil, GlobalGameManager._initialized, has ended"
+      },
+      {
+        "gate": "wait_done",
+        "offset": "0x2111354",
+        "word": "f9401274",
+        "reason": "EntryScene.<WaitForAddressableManagerInit>d__25.MoveNext, state 3 entry (ldr x20,[x19,#0x20]): the one-second wait has ended and the opening's load starts"
+      },
+      {
+        "gate": "load_status",
+        "offset": "0x1a82dec",
+        "word": "7100041f",
+        "reason": "AddressableManager.<LoadAssetCoroutine>d__35<object>.MoveNext, after get_Status (cmp w0,#1): w0 = the handle's status (1 = Succeeded); the game calls onLoadAsset, which ends the load, only on 1 and drops any other status without a message"
+      },
+      {
+        "gate": "opening_wait",
+        "offset": "0x353d18c",
+        "word": "39416268",
+        "reason": "AutoSavingUI.Update, before the _waitForOpeningLoading check (ldrb w8,[x19,#0x58]): x19 = the AutoSavingUI, once a frame"
+      }
+    ]
+  }
+}
