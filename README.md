@@ -24,7 +24,6 @@ Download **nxnative.ipa** from the [releases tab](../../releases/latest). The ro
 
 Install the .ipa with your preferred Sideloading service of choice, [SideStore is recommended](https://sidestore.io/)
 
-
 ##  Requirements 
 
 A desktop environment for initial setup, if unavailable, see [SideInstaller](https://sideinstaller.net/)
@@ -32,6 +31,16 @@ A desktop environment for initial setup, if unavailable, see [SideInstaller](htt
 System requirements: A14 chipset or higher, M1 chipset or later 
 
 The game **will not** boot up on lower chipsets, NVN needs Metal 4 to work, which isn’t supported on older models
+
+## License
+
+This project is licensed under the GNU General Public
+License v3.0 (GPL-3.0).
+
+This project is a derivative of [nxnative](https://github.com/seedds/nxnative),
+which was originally distributed under the MIT License.
+
+You are free to use, modify, and distribute this software, provided that any distributed versions or derivative works comply with the terms of the license, including making their corresponding source code available.
 
 ## Legal
 
