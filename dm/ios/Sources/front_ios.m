@@ -13,6 +13,7 @@
 #include "haptics_apple.h"
 #include "save_sync.h"
 #import "CloudSaves.h"
+#import "LiveContainer.h"
 #import "ShaderDownload.h"
 #import "UpdateCheck.h"
 #import "DmRepo.h"
@@ -211,10 +212,12 @@ static void launcher_done(void) { [g_root startGame]; }
 }
 // "Import image" in the Game files alert: pick a RomFS image (.img only) in the Files app and move it to Documents/romfs.img, where main.m looks for it at the next start
 - (void)importImage {
-    UTType *img = [UTType typeWithFilenameExtension:@"img"];
-    UIDocumentPickerViewController *pk = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[img ?: UTTypeData] asCopy:NO];
-    pk.allowsMultipleSelection = NO; pk.delegate = self;
-    [self presentViewController:pk animated:YES completion:nil];
+    dm_live_container_warn(self, ^{
+        UTType *img = [UTType typeWithFilenameExtension:@"img"];
+        UIDocumentPickerViewController *pk = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[img ?: UTTypeData] asCopy:NO];
+        pk.allowsMultipleSelection = NO; pk.delegate = self;
+        [self presentViewController:pk animated:YES completion:nil];
+    });
 }
 - (void)importDone:(NSString *)title message:(NSString *)m {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:m preferredStyle:UIAlertControllerStyleAlert];

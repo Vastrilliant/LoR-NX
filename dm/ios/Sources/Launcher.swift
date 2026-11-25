@@ -56,13 +56,16 @@ private struct CloudSavesSection: View {
             fputs("launcher: cloud saves: no view controller to present the folder picker from\n", stderr)
             return
         }
-        FolderPicker.present(from: top) { url in
-            guard let url else { return }   // cancelled
-            if dm_store_cloud_saves(url) {
-                note = "Saved. The game uses this folder when you press Play."
-                refresh()
-            } else {
-                note = "That folder could not be remembered — try a different one."
+        dm_live_container_warn(top) {
+            guard !FolderPicker.isShowing, let top = FolderPicker.topViewController() else { return }
+            FolderPicker.present(from: top) { url in
+                guard let url else { return }   // cancelled
+                if dm_store_cloud_saves(url) {
+                    note = "Saved. The game uses this folder when you press Play."
+                    refresh()
+                } else {
+                    note = "That folder could not be remembered — try a different one."
+                }
             }
         }
     }
