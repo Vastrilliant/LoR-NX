@@ -1,0 +1,25 @@
+{
+  "id": "free-passives",
+  "title": "Free Passives (Library of Ruina)",
+  "description": "Port of Alektro3000's Free Passives (NexusMods libraryofruina/mods/24) as Switch exefs patches for Library of Ruina 1.0.3 (build ID aeea627d...). GetCurrentPassiveCost returns 0, CanSuccessionPassive, CanSuccessionPassiveByCost and LibraryModel.CanPassiveSuccession return true, CheckOverPassiveCost does nothing, and UnEquipGivePassiveBook only removes the book id from the holder's passive list and clears the passive book's equipped id, skipping the succession restore loops, as the original mod's replacement does.",
+  "launcher": {
+    "env": "DM_MOD_FREEPASSIVES",
+    "category": "Cheats",
+    "label": "Free Passives",
+    "order": 120,
+    "note": "Removes all passive attribution caps, may affect save data. Original mod by [Alektro3000’s NexusMods](https://www.nexusmods.com/libraryofruina/mods/24)"
+  },
+  "game": "Library of Ruina 1.0.3",
+  "exefs": "exefs",
+  "expect": {
+    "aeea627ddbd1214764dfef5f965e94a2": {
+      "0x20b6f30": "d10243ff",
+      "0x20b750c": "2a1303e0",
+      "0x20b9418": "910003e8",
+      "0x20bb8dc": "1a9f07e0",
+      "0x20bb8e8": "2a1f03e0",
+      "0x20bbc8c": "1a9fb7e0",
+      "0x28a2208": "1a9fd7e0"
+    }
+  }
+}
