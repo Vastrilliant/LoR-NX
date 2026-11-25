@@ -1,0 +1,26 @@
+{
+  "id": "fullscreen-mode",
+  "title": "Fullscreen Mode",
+  "description": "Makes the game render at true fullscreen without stretching. Based off of Bat'ko Makhno's Resolution Fix Steam Workshop mod (https://steamcommunity.com/sharedfiles/filedetails/?l=latam&id=2893583716)",
+  "launcher": {
+    "env": "DM_MOD_FULLSCREEN",
+    "category": "Graphics",
+    "label": "Fullscreen Mode",
+    "note": "Makes the game render at true fullscreen without stretching. Based off of Bat'ko Makhno's Resolution Fix Steam Workshop mod"
+  },
+  "game": "Library of Ruina 1.0.3",
+  "gates": [
+    "frame_pre"
+  ],
+  "host": "host.c",
+  "obs": {
+    "aeea627ddbd1214764dfef5f965e94a2": [
+      {
+        "gate": "frame_pre",
+        "offset": "0x1ed1a84",
+        "word": "a90167fa",
+        "reason": "InputManager.Update, second instruction (once a frame, in every scene): the callback sets the game's resolution to the screen's aspect ratio through UnityEngine.Screen.SetResolution, which the Switch build's GameScreen.SetResolution (0x1F3EBD0, a bare ret) never calls"
+      }
+    ]
+  }
+}

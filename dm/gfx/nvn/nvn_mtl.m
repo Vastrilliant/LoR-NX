@@ -11618,6 +11618,11 @@ static int present_crop_rect(id<MTLTexture> src, const int crop[4], NSUInteger r
     }
     r[0] = crop[0]; r[1] = crop[1]; r[2] = crop[2]; r[3] = crop[3]; return 1;
 }
+static _Atomic uint32_t g_canvas_wh;
+void dm_nvn_canvas_size(int *w, int *h) {
+    uint32_t v = atomic_load_explicit(&g_canvas_wh, memory_order_relaxed);
+    *w = (int)(v & 0xffff); *h = (int)(v >> 16);
+}
 static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4]) {
     NSUInteger r[4]; if (!present_crop_rect(src, crop, r)) return 0;
     NSUInteger cx = r[0], cy = r[1], cw = r[2], ch = r[3];
@@ -11628,6 +11633,7 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     present_pipeline(dst.pixelFormat);
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     double dw = dst.width, dh = dst.height;
+    atomic_store_explicit(&g_canvas_wh, (uint32_t)dw | ((uint32_t)dh << 16), memory_order_relaxed);
     MTLViewport vp = present_viewport(cw, ch, dw, dh);
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     static double last_vp[4];   // Log one line when the viewport changes (used by the real-device screen-level acceptance screen_check.py to check the aspect ratio)
