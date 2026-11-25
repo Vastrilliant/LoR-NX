@@ -1,0 +1,39 @@
+{
+  "id": "no-limits",
+  "title": "No Limits (Library of Ruina)",
+  "description": "Port of xPCIXx's No Limits (NexusMods 14): the card equip limits are raised (BookModel.GetLimit and DiceCardXmlInfo.GetCardLimit return 100000, GetFloorLimit returns 99, as exefs patches) and every entry of the equip drop box table has its remain and max set to 99 (a host callback on one observation gate). For Library of Ruina 1.0.3.",
+  "launcher": {
+    "env": "DM_MOD_NOLIMITS",
+    "category": "Cheats",
+    "label": "No Limits",
+    "order": 120,
+    "note": "Removes card equip limits, may affect save data. Original mod by [xPCIXx’s NexusMods](https://www.nexusmods.com/libraryofruina/mods/14)"
+  },
+  "game": "Library of Ruina 1.0.3",
+  "exefs": "exefs",
+  "expect": {
+    "aeea627ddbd1214764dfef5f965e94a2": {
+      "0x20b1590": "a9bf7bfd",
+      "0x20b1594": "910003fd",
+      "0x20b1598": "f9400800",
+      "0x233aa40": "71000c1f",
+      "0x233aa44": "52800068",
+      "0x233aa48": "1a9f1500",
+      "0x233aa60": "528001e0"
+    }
+  },
+  "gates": [
+    "equip_drop_box_post"
+  ],
+  "host": "host.c",
+  "obs": {
+    "aeea627ddbd1214764dfef5f965e94a2": [
+      {
+        "gate": "equip_drop_box_post",
+        "offset": "0x20c1aec",
+        "word": "aa1303e0",
+        "reason": "DropBoxListModel.GetEquipDropBoxCountInfoTable epilogue (the only normal return): x19 = the List<DropBoxCount> that is returned"
+      }
+    ]
+  }
+}
