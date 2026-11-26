@@ -32,6 +32,7 @@ int dm_opmode(void);
 #define K_RT_SET_OFFSET_MIN 0x19BADB0u
 #define K_RT_SET_OFFSET_MAX 0x19BB150u
 #define K_RT_GET_RECT 0x19BA1B0u
+#define K_RT_GET_PIVOT 0x19BA900u
 #define K_TRANSFORM_GET_LOSSY_SCALE 0x19BFA20u
 #define F_ARRAY_LEN 0x18
 #define F_ARRAY_DATA 0x20
@@ -61,7 +62,9 @@ int dm_opmode(void);
 #define K_BAND_FRAC 0.5
 #define K_CENTER_FRAC 0.02
 #define K_MIDDLE_FRAC 0.10
-#define K_EDGE_FRAC 0.04
+#define K_EDGE_FRAC 0.06
+#define K_STRETCH_MARGIN 0.08
+#define K_POINT_FRAC 0.05
 #define K_APPLY_EPS 0.5
 #define K_DESIGN_ASPECT (16.0 / 9.0)
 
@@ -265,7 +268,7 @@ static int classify(double d0, double d1, const cv_t *cv, int art, double *t0, d
         *t1 = wc;
         return ACT_STRETCH;
     }
-    if (w >= K_WIDE_FRAC * dw || (off <= K_CENTER_FRAC * dw && w >= K_BAND_FRAC * dw)) {
+    if ((ml <= K_STRETCH_MARGIN * dw && mr <= K_STRETCH_MARGIN * dw) || (off <= K_CENTER_FRAC * dw && w >= K_BAND_FRAC * dw)) {
         *t0 = ml;
         *t1 = wc - mr;
         if (*t1 < *t0) *t1 = *t0;
@@ -373,7 +376,7 @@ static int settle_container(void *tf, rec_t *r, const cv_t *cv, double d0, doubl
         *t1 = d1 + r->sh;
         return r->act;
     }
-    if (nchild <= 0 || opaque(tf)) return act;
+    if (nchild <= 0 || d1 - d0 > K_POINT_FRAC * cv->design || opaque(tf)) return act;
     par_t dp = {d0, dsz, 0.0, 0.0, kp, 0.0, 0.0};
     double u0, u1, sh = *t0 - d0;
     if (children_union(tf, cv, &dp, &u0, &u1)) {
@@ -415,22 +418,38 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
         if (!full_logged++) LOG("[mod fullscreen-mode] element table full (%d), new elements are left alone", K_REC_CAP);
         return;
     }
-    if (fabs(srel - 1.0) > 0.01) {
-        g_act[ACT_SCALED]++;
-        if (!r->logged && log_ok()) {
-            char name[48];
-            ascii_name(tf, name, sizeof name);
-            r->logged = 1;
-            g_log_lines++;
-            LOG("[mod fullscreen-mode]   %*s\"%s\" scale %.2f: %s", depth * 2, "", name, srel, k_act_name[ACT_SCALED]);
-        }
-        return;
-    }
     rec_sync(r, ca, co);
     double c0 = r->oa[ax] * pp->dsz + r->oo[ax];
     double c1 = r->oa[2 + ax] * pp->dsz + r->oo[2 + ax];
     double lo = fmin(c0, c1), hi = fmax(c0, c1);
     double d0 = pp->des0 + lo * pp->kp, d1 = pp->des0 + hi * pp->kp;
+    if (fabs(srel - 1.0) > 0.01) {
+        vec2 pv = FN(K_RT_GET_PIVOT, vec2, void *, const void *)(tf, NULL);
+        double piv = d0 + (ax ? pv.y : pv.x) * (d1 - d0), sc = fabs(srel);
+        double va = piv + (d0 - piv) * sc, vb = piv + (d1 - piv) * sc, x0 = 0.0, x1 = 0.0;
+        double vlo = fmin(va, vb), vhi = fmax(va, vb);
+        int sact = classify(vlo, vhi, cv, 0, &x0, &x1);
+        double a0s = 0.0, a1s = 0.0;
+        if (sact == ACT_LEFT || sact == ACT_RIGHT || sact == ACT_CENTER) {
+            double sh = x0 - vlo;
+            if (place_axis(tf, ax, pp->act0, pp->asz, pp->kp, d0 + sh, d1 + sh, &a0s, &a1s)) {
+                rt_read(tf, ca, co);
+                memcpy(r->aa, ca, sizeof r->aa);
+                memcpy(r->ao, co, sizeof r->ao);
+                r->keep = 1;
+                g_changed++;
+            }
+            g_act[sact]++;
+        } else g_act[ACT_SCALED]++;
+        if (!r->logged && log_ok()) {
+            char name[48];
+            ascii_name(tf, name, sizeof name);
+            r->logged = 1;
+            g_log_lines++;
+            LOG("[mod fullscreen-mode]   %*s\"%s\" scale %.2f, design %.0f..%.0f: %s", depth * 2, "", name, srel, vlo, vhi, k_act_name[sact == ACT_LEFT || sact == ACT_RIGHT || sact == ACT_CENTER ? sact : ACT_SCALED]);
+        }
+        return;
+    }
     double u0 = r->oa[ay] * pp->vsz + r->oo[ay];
     double u1 = r->oa[2 + ay] * pp->vsz + r->oo[2 + ay];
     double v0 = pp->v0 + fmin(u0, u1) * pp->kp, v1 = pp->v0 + fmax(u0, u1) * pp->kp;
