@@ -29,6 +29,10 @@ int dm_opmode(void);
 #define K_RT_SET_ANCHOR_MAX 0x19BA4F0u
 #define K_RT_GET_OFFSET_MIN 0x19BACD0u
 #define K_RT_GET_OFFSET_MAX 0x19BB020u
+#define K_RT_SET_OFFSET_MIN 0x19BADB0u
+#define K_RT_SET_OFFSET_MAX 0x19BB150u
+#define K_RT_GET_RECT 0x19BA1B0u
+#define K_TRANSFORM_GET_LOSSY_SCALE 0x19BFA20u
 #define F_ARRAY_LEN 0x18
 #define F_ARRAY_DATA 0x20
 #define F_SCALER_MODE 0x18
@@ -39,19 +43,37 @@ int dm_opmode(void);
 #define MATCH_WIDTH_OR_HEIGHT 0
 #define K_WARMUP_FRAMES 120
 #define K_RECHECK_FRAMES 60
-#define K_UI_EVERY 30
+#define K_UI_EVERY 20
 #define K_MAX_TEXTURE_W 1920
 #define K_MAX_TEXTURE_H 1080
 #define K_MAX_ATTEMPTS 8
 #define K_TYPE_TRIES 8
-#define K_LOG_LINES 120
+#define K_LOG_LINES 300
+#define K_MAX_DEPTH 10
+#define K_NODE_BUDGET 6000
+#define K_REC_CAP 8192
+#define K_FULL_TOL 2.0
+#define K_WIDE_FRAC 0.7
+#define K_CENTER_FRAC 0.02
+#define K_APPLY_EPS 0.5
 #define K_DESIGN_ASPECT (16.0 / 9.0)
 
 typedef struct { float x, y; } vec2;
+typedef struct { float x, y, z; } vec3;
+typedef struct { float x, y, w, h; } rect4;
+typedef struct { void *obj; float oa[4], oo[4], aa[4], ao[4]; uint8_t seen, logged; } rec_t;
+typedef struct { int ax; double size, design, cscale; } cv_t;
+typedef struct { double des0, dsz, act0, asz, kp; } par_t;
+
+enum { ACT_SKIP, ACT_LEFT, ACT_RIGHT, ACT_CENTER, ACT_STRETCH, ACT_SCALED, ACT_COUNT };
+
+static const char *const k_act_name[ACT_COUNT] = {"outside the design area, left alone", "left", "right", "centre", "stretch", "scaled, left alone"};
 
 static uint8_t *s_main;
 static int g_state, g_frame, g_next_check = K_WARMUP_FRAMES, g_attempts, g_applied, g_next_ui, g_type_tries, g_log_lines, g_ui_level = -1;
-static void *g_scaler_type, *g_graphic_type;
+static void *g_scaler_type, *g_layout_type, *g_scroll_type, *s_rt_klass;
+static rec_t s_rec[K_REC_CAP];
+static int s_rec_n, g_budget, g_changed, g_act[ACT_COUNT];
 
 static uint8_t *main_base(void) {
     if (!s_main)
@@ -84,13 +106,15 @@ static void *find_type(const char *name) {
 }
 
 static int resolve_types(void) {
-    if (g_scaler_type && g_graphic_type) return 1;
-    if (g_type_tries >= K_TYPE_TRIES) return 0;
-    g_type_tries++;
-    if (!g_scaler_type) g_scaler_type = find_type("UnityEngine.UI.CanvasScaler, UnityEngine.UI");
-    if (!g_graphic_type) g_graphic_type = find_type("UnityEngine.UI.Graphic, UnityEngine.UI");
-    LOG("[mod fullscreen-mode] types: CanvasScaler %p, Graphic %p", g_scaler_type, g_graphic_type);
-    return g_scaler_type && g_graphic_type;
+    if (g_scaler_type && g_layout_type && g_scroll_type) return 1;
+    if (g_type_tries < K_TYPE_TRIES) {
+        g_type_tries++;
+        if (!g_scaler_type) g_scaler_type = find_type("UnityEngine.UI.CanvasScaler, UnityEngine.UI");
+        if (!g_layout_type) g_layout_type = find_type("UnityEngine.UI.LayoutGroup, UnityEngine.UI");
+        if (!g_scroll_type) g_scroll_type = find_type("UnityEngine.UI.ScrollRect, UnityEngine.UI");
+        LOG("[mod fullscreen-mode] types: CanvasScaler %p, LayoutGroup %p, ScrollRect %p", g_scaler_type, g_layout_type, g_scroll_type);
+    }
+    return g_scaler_type != NULL;
 }
 
 static int round8(double v) { return ((int)(v + 4.0)) & ~7; }
@@ -112,39 +136,234 @@ static int ui_level(void) {
     if (g_ui_level < 0) {
         const char *v = getenv("DM_MOD_FULLSCREEN_UI");
         g_ui_level = v && v[0] >= '0' && v[0] <= '2' ? v[0] - '0' : 2;
-        LOG("[mod fullscreen-mode] UI level %d (DM_MOD_FULLSCREEN_UI=%s): 0 resolution only, 1 + canvas scalers match the height, 2 + the layout is centred on a 16:9 area", g_ui_level, v ? v : "unset");
+        LOG("[mod fullscreen-mode] UI level %d (DM_MOD_FULLSCREEN_UI=%s): 0 resolution only, 1 + canvas scalers match the height or width, 2 + every element is moved to the screen's corner or edge, expanded or stretched, never out of bounds", g_ui_level, v ? v : "unset");
     }
     return g_ui_level;
 }
 
 static int near(float a, float b) { return fabsf(a - b) < 0.002f; }
 
-static void layout_children(void *canvas_tf, double aspect, int *moved, int verbose) {
-    int n = FN(K_TRANSFORM_CHILD_COUNT, int, void *, const void *)(canvas_tf, NULL);
-    double r = K_DESIGN_ASPECT / aspect;
-    for (int i = 0; i < n; i++) {
-        void *child = FN(K_TRANSFORM_GET_CHILD, void *, void *, int, const void *)(canvas_tf, i, NULL);
-        if (!alive(child)) continue;
-        vec2 amin = FN(K_RT_GET_ANCHOR_MIN, vec2, void *, const void *)(child, NULL);
-        vec2 amax = FN(K_RT_GET_ANCHOR_MAX, vec2, void *, const void *)(child, NULL);
-        vec2 omin = FN(K_RT_GET_OFFSET_MIN, vec2, void *, const void *)(child, NULL);
-        vec2 omax = FN(K_RT_GET_OFFSET_MAX, vec2, void *, const void *)(child, NULL);
-        int stretched = near(amin.x, 0.0f) && near(amax.x, 1.0f) && fabsf(omin.x) < 0.5f && fabsf(omax.x) < 0.5f;
-        void *graphic = stretched ? FN(K_COMPONENT_GET_COMPONENT, void *, void *, void *, const void *)(child, g_graphic_type, NULL) : NULL;
-        int act = stretched && !alive(graphic) && r < 0.999;
-        if (verbose && g_log_lines < K_LOG_LINES) {
-            char name[64];
-            ascii_name(child, name, sizeof name);
-            g_log_lines++;
-            LOG("[mod fullscreen-mode]   child \"%s\" anchors (%.3f,%.3f)-(%.3f,%.3f) offsets x %.1f / %.1f, %s -> %s", name, amin.x, amin.y, amax.x, amax.y, omin.x, omax.x,
-                !stretched ? "not full width" : alive(graphic) ? "has a graphic" : "plain container", act ? "centred" : "left alone");
+static int same4(const float *a, const float *b, float tol) {
+    for (int i = 0; i < 4; i++)
+        if (fabsf(a[i] - b[i]) > tol) return 0;
+    return 1;
+}
+
+static void rt_read(void *tf, float *a, float *o) {
+    vec2 amin = FN(K_RT_GET_ANCHOR_MIN, vec2, void *, const void *)(tf, NULL);
+    vec2 amax = FN(K_RT_GET_ANCHOR_MAX, vec2, void *, const void *)(tf, NULL);
+    vec2 omin = FN(K_RT_GET_OFFSET_MIN, vec2, void *, const void *)(tf, NULL);
+    vec2 omax = FN(K_RT_GET_OFFSET_MAX, vec2, void *, const void *)(tf, NULL);
+    a[0] = amin.x; a[1] = amin.y; a[2] = amax.x; a[3] = amax.y;
+    o[0] = omin.x; o[1] = omin.y; o[2] = omax.x; o[3] = omax.y;
+}
+
+static void rt_write_anchors(void *tf, const float *a) {
+    vec2 amin = {a[0], a[1]}, amax = {a[2], a[3]};
+    FN(K_RT_SET_ANCHOR_MIN, void, void *, vec2, const void *)(tf, amin, NULL);
+    FN(K_RT_SET_ANCHOR_MAX, void, void *, vec2, const void *)(tf, amax, NULL);
+}
+
+static void rt_write_offsets(void *tf, const float *o) {
+    vec2 omin = {o[0], o[1]}, omax = {o[2], o[3]};
+    FN(K_RT_SET_OFFSET_MIN, void, void *, vec2, const void *)(tf, omin, NULL);
+    FN(K_RT_SET_OFFSET_MAX, void, void *, vec2, const void *)(tf, omax, NULL);
+}
+
+static double lossy_scale(void *tf, int ax) {
+    vec3 s = FN(K_TRANSFORM_GET_LOSSY_SCALE, vec3, void *, const void *)(tf, NULL);
+    return fabs(ax ? s.y : s.x);
+}
+
+static rec_t *rec_get(void *obj) {
+    uint32_t h = (uint32_t)(((uintptr_t)obj >> 4) * 2654435761u);
+    for (uint32_t i = 0; i < K_REC_CAP; i++) {
+        rec_t *r = &s_rec[(h + i) % K_REC_CAP];
+        if (r->obj == obj) return r;
+        if (!r->obj) {
+            if (s_rec_n >= K_REC_CAP - K_REC_CAP / 8) return NULL;
+            r->obj = obj;
+            s_rec_n++;
+            return r;
         }
-        if (!act) continue;
-        vec2 nmin = {(float)((1.0 - r) / 2.0), amin.y}, nmax = {(float)((1.0 + r) / 2.0), amax.y};
-        FN(K_RT_SET_ANCHOR_MIN, void, void *, vec2, const void *)(child, nmin, NULL);
-        FN(K_RT_SET_ANCHOR_MAX, void, void *, vec2, const void *)(child, nmax, NULL);
-        (*moved)++;
     }
+    return NULL;
+}
+
+static void rec_sync(rec_t *r, const float *ca, const float *co) {
+    if (!r->seen) {
+        r->seen = 1;
+        memcpy(r->oa, ca, sizeof r->oa); memcpy(r->oo, co, sizeof r->oo);
+        memcpy(r->aa, ca, sizeof r->aa); memcpy(r->ao, co, sizeof r->ao);
+        return;
+    }
+    if (!same4(ca, r->aa, 1e-5f)) memcpy(r->oa, ca, sizeof r->oa);
+    if (!same4(co, r->ao, 1e-3f)) memcpy(r->oo, co, sizeof r->oo);
+}
+
+static int classify(double d0, double d1, const cv_t *cv, double *t0, double *t1) {
+    double dw = cv->design, wc = cv->size, pad = (wc - dw) / 2.0, mid = dw / 2.0;
+    double w = d1 - d0, ml = d0, mr = dw - d1;
+    int outside = w > 1.0 ? (d1 <= K_APPLY_EPS || d0 >= dw - K_APPLY_EPS) : (d1 < -K_APPLY_EPS || d0 > dw + K_APPLY_EPS);
+    if (outside) return ACT_SKIP;
+    if (ml <= K_FULL_TOL && mr <= K_FULL_TOL) { *t0 = 0.0; *t1 = wc; return ACT_STRETCH; }
+    int act;
+    if (w >= K_WIDE_FRAC * dw) {
+        *t0 = ml; *t1 = wc - mr;
+        act = ACT_STRETCH;
+    } else {
+        double c = (d0 + d1) / 2.0;
+        if (fabs(c - mid) <= K_CENTER_FRAC * dw) { *t0 = d0 + pad; *t1 = d1 + pad; act = ACT_CENTER; }
+        else if (c < mid) { *t0 = d0; *t1 = d1; act = ACT_LEFT; }
+        else { *t0 = d0 + 2.0 * pad; *t1 = d1 + 2.0 * pad; act = ACT_RIGHT; }
+    }
+    if (act == ACT_STRETCH) {
+        if (*t0 < 0.0) *t0 = 0.0;
+        if (*t1 > wc) *t1 = wc;
+        if (*t1 < *t0) *t1 = *t0;
+        return act;
+    }
+    if (*t1 - *t0 >= wc) { *t0 = 0.0; *t1 = wc; return ACT_STRETCH; }
+    if (*t0 < 0.0) { *t1 -= *t0; *t0 = 0.0; }
+    if (*t1 > wc) { *t0 -= *t1 - wc; *t1 = wc; }
+    return act;
+}
+
+static int opaque(void *tf) {
+    if (g_layout_type && alive(FN(K_COMPONENT_GET_COMPONENT, void *, void *, void *, const void *)(tf, g_layout_type, NULL))) return 1;
+    if (g_scroll_type && alive(FN(K_COMPONENT_GET_COMPONENT, void *, void *, void *, const void *)(tf, g_scroll_type, NULL))) return 1;
+    return 0;
+}
+
+static void process_children(void *tf, const cv_t *cv, const par_t *pp, int depth);
+
+static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth) {
+    if (g_budget <= 0) return;
+    g_budget--;
+    int ax = cv->ax;
+    double s = lossy_scale(tf, ax);
+    double srel = cv->cscale > 1e-6 && pp->kp > 1e-6 ? s / cv->cscale / pp->kp : 1.0;
+    float ca[4], co[4];
+    rt_read(tf, ca, co);
+    rec_t *r = rec_get(tf);
+    if (!r) {
+        static int full_logged;
+        if (!full_logged++) LOG("[mod fullscreen-mode] element table full (%d), new elements are left alone", K_REC_CAP);
+        return;
+    }
+    if (fabs(srel - 1.0) > 0.01) {
+        g_act[ACT_SCALED]++;
+        if (!r->logged && g_log_lines < K_LOG_LINES) {
+            char name[48];
+            ascii_name(tf, name, sizeof name);
+            r->logged = 1;
+            g_log_lines++;
+            LOG("[mod fullscreen-mode]   %*s\"%s\" scale %.2f: %s", depth * 2, "", name, srel, k_act_name[ACT_SCALED]);
+        }
+        return;
+    }
+    rec_sync(r, ca, co);
+    double c0 = r->oa[ax] * pp->dsz + r->oo[ax];
+    double c1 = r->oa[2 + ax] * pp->dsz + r->oo[2 + ax];
+    double lo = fmin(c0, c1), hi = fmax(c0, c1);
+    double d0 = pp->des0 + lo * pp->kp, d1 = pp->des0 + hi * pp->kp;
+    double t0 = 0.0, t1 = 0.0;
+    int act = classify(d0, d1, cv, &t0, &t1);
+    g_act[act]++;
+    double a0 = pp->act0 + (ca[ax] * pp->asz + co[ax]) * pp->kp;
+    double a1 = pp->act0 + (ca[2 + ax] * pp->asz + co[2 + ax]) * pp->kp;
+    if (act == ACT_SKIP) {
+        if (!r->logged && g_log_lines < K_LOG_LINES) {
+            char name[48];
+            ascii_name(tf, name, sizeof name);
+            r->logged = 1;
+            g_log_lines++;
+            LOG("[mod fullscreen-mode]   %*s\"%s\" design %.0f..%.0f: %s", depth * 2, "", name, d0, d1, k_act_name[act]);
+        }
+        return;
+    }
+    double was0 = a0, was1 = a1;
+    double e0 = t0 - a0, e1 = t1 - a1;
+    int changed = 0;
+    if (fabs(e0) > K_APPLY_EPS || fabs(e1) > K_APPLY_EPS) {
+        double den = pp->asz * pp->kp;
+        if (den > 1e-3) {
+            float na[4];
+            memcpy(na, ca, sizeof na);
+            na[ax] += (float)(e0 / den);
+            na[2 + ax] += (float)(e1 / den);
+            rt_write_anchors(tf, na);
+            rt_read(tf, ca, co);
+            a0 = pp->act0 + (ca[ax] * pp->asz + co[ax]) * pp->kp;
+            a1 = pp->act0 + (ca[2 + ax] * pp->asz + co[2 + ax]) * pp->kp;
+            e0 = t0 - a0; e1 = t1 - a1;
+        }
+        if (fabs(e0) > K_APPLY_EPS || fabs(e1) > K_APPLY_EPS) {
+            float no[4];
+            memcpy(no, co, sizeof no);
+            no[ax] += (float)(e0 / pp->kp);
+            no[2 + ax] += (float)(e1 / pp->kp);
+            rt_write_offsets(tf, no);
+            rt_read(tf, ca, co);
+            a0 = pp->act0 + (ca[ax] * pp->asz + co[ax]) * pp->kp;
+            a1 = pp->act0 + (ca[2 + ax] * pp->asz + co[2 + ax]) * pp->kp;
+        }
+        memcpy(r->aa, ca, sizeof r->aa);
+        memcpy(r->ao, co, sizeof r->ao);
+        changed = 1;
+        g_changed++;
+    }
+    if (changed && r->logged < 2 && g_log_lines < K_LOG_LINES) {
+        char name[48];
+        ascii_name(tf, name, sizeof name);
+        r->logged++;
+        g_log_lines++;
+        LOG("[mod fullscreen-mode]   %*s\"%s\" %s: design %.0f..%.0f, was %.0f..%.0f, now %.0f..%.0f (screen %.0f)", depth * 2, "", name, k_act_name[act], d0, d1, was0, was1, a0, a1, cv->size);
+    }
+    if (act != ACT_STRETCH || depth >= K_MAX_DEPTH || opaque(tf)) return;
+    par_t np;
+    np.des0 = d0;
+    np.dsz = hi - lo;
+    np.act0 = a0;
+    np.asz = ((double)ca[2 + ax] - ca[ax]) * pp->asz + ((double)co[2 + ax] - co[ax]);
+    np.kp = cv->cscale > 1e-6 && s > 1e-6 ? s / cv->cscale : 1.0;
+    process_children(tf, cv, &np, depth + 1);
+}
+
+static void process_children(void *tf, const cv_t *cv, const par_t *pp, int depth) {
+    int n = FN(K_TRANSFORM_CHILD_COUNT, int, void *, const void *)(tf, NULL);
+    for (int i = 0; i < n && g_budget > 0; i++) {
+        void *child = FN(K_TRANSFORM_GET_CHILD, void *, void *, int, const void *)(tf, i, NULL);
+        if (!alive(child) || *(void *const *)child != s_rt_klass) continue;
+        process_node(child, cv, pp, depth);
+    }
+}
+
+static int layout_canvas(void *sc, void *go, const float *ref, double aspect) {
+    void *tf = FN(K_COMPONENT_GET_TRANSFORM, void *, void *, const void *)(sc, NULL);
+    if (!alive(tf)) return 0;
+    if (!s_rt_klass) s_rt_klass = *(void *const *)tf;
+    if (*(void *const *)tf != s_rt_klass) return 0;
+    if (ref[0] < 1.0f || ref[1] < 1.0f) return 0;
+    rect4 rc = FN(K_RT_GET_RECT, rect4, void *, const void *)(tf, NULL);
+    double wc = rc.w, hc = rc.h;
+    if (wc < 1.0 || hc < 1.0 || fabs(wc / hc - aspect) > aspect * 0.02) return 0;
+    cv_t cv;
+    if (wc > ref[0] + 1.0) { cv.ax = 0; cv.size = wc; cv.design = ref[0]; }
+    else if (hc > ref[1] + 1.0) { cv.ax = 1; cv.size = hc; cv.design = ref[1]; }
+    else return 0;
+    cv.cscale = lossy_scale(tf, cv.ax);
+    if (cv.cscale < 1e-6) return 0;
+    par_t pp = {0.0, cv.design, 0.0, cv.size, 1.0};
+    int before = g_changed;
+    process_children(tf, &cv, &pp, 0);
+    if (g_changed != before && g_log_lines < K_LOG_LINES) {
+        char name[48];
+        ascii_name(go, name, sizeof name);
+        g_log_lines++;
+        LOG("[mod fullscreen-mode] canvas \"%s\" %.0fx%.0f, reference %.0fx%.0f, %s axis: %d elements adjusted", name, wc, hc, ref[0], ref[1], cv.ax ? "vertical" : "horizontal", g_changed - before);
+    }
+    return 1;
 }
 
 static void sweep_ui(void) {
@@ -156,7 +375,10 @@ static void sweep_ui(void) {
     double aspect = (double)sw / sh;
     void *arr = FN(K_RESOURCES_FINDALL, void *, void *, const void *)(g_scaler_type, NULL);
     uint64_t n = arr ? *(const uint64_t *)((uintptr_t)arr + F_ARRAY_LEN) : 0;
-    int scalers = 0, matched = 0, moved = 0;
+    int scalers = 0, matched = 0, laid = 0;
+    g_budget = K_NODE_BUDGET;
+    g_changed = 0;
+    memset(g_act, 0, sizeof g_act);
     for (uint64_t i = 0; i < n; i++) {
         void *sc = *(void *const *)((uintptr_t)arr + F_ARRAY_DATA + 8 * i);
         if (!alive(sc)) continue;
@@ -165,29 +387,28 @@ static void sweep_ui(void) {
         scalers++;
         uint8_t *p = (uint8_t *)sc;
         int mode = *(int *)(p + F_SCALER_MODE);
-        int verbose = 0;
-        if (mode == SCALE_WITH_SCREEN_SIZE) {
-            float want = aspect >= K_DESIGN_ASPECT ? 1.0f : 0.0f;
-            int mm = *(int *)(p + F_SCALER_MATCH_MODE);
-            float match = *(float *)(p + F_SCALER_MATCH);
-            if (mm != MATCH_WIDTH_OR_HEIGHT || !near(match, want)) {
-                if (g_log_lines < K_LOG_LINES) {
-                    char name[64];
-                    ascii_name(go, name, sizeof name);
-                    float *ref = (float *)(p + F_SCALER_REFERENCE);
-                    g_log_lines++;
-                    LOG("[mod fullscreen-mode] canvas \"%s\": scaler reference %.0fx%.0f, match mode %d, match %.2f -> match %.0f", name, ref[0], ref[1], mm, match, want);
-                    verbose = 1;
-                }
-                *(int *)(p + F_SCALER_MATCH_MODE) = MATCH_WIDTH_OR_HEIGHT;
-                *(float *)(p + F_SCALER_MATCH) = want;
-                matched++;
+        if (mode != SCALE_WITH_SCREEN_SIZE) continue;
+        float *ref = (float *)(p + F_SCALER_REFERENCE);
+        double ref_aspect = ref[0] > 0.0f && ref[1] > 0.0f ? (double)ref[0] / ref[1] : K_DESIGN_ASPECT;
+        float want = aspect >= ref_aspect ? 1.0f : 0.0f;
+        int mm = *(int *)(p + F_SCALER_MATCH_MODE);
+        float match = *(float *)(p + F_SCALER_MATCH);
+        if (mm != MATCH_WIDTH_OR_HEIGHT || !near(match, want)) {
+            if (g_log_lines < K_LOG_LINES) {
+                char name[64];
+                ascii_name(go, name, sizeof name);
+                g_log_lines++;
+                LOG("[mod fullscreen-mode] canvas \"%s\": scaler reference %.0fx%.0f, match mode %d, match %.2f -> match %.0f", name, ref[0], ref[1], mm, match, want);
             }
+            *(int *)(p + F_SCALER_MATCH_MODE) = MATCH_WIDTH_OR_HEIGHT;
+            *(float *)(p + F_SCALER_MATCH) = want;
+            matched++;
         }
-        if (level >= 2) layout_children(FN(K_COMPONENT_GET_TRANSFORM, void *, void *, const void *)(sc, NULL), aspect, &moved, verbose);
+        if (level >= 2 && layout_canvas(sc, go, ref, aspect)) laid++;
     }
     static int logged;
-    if ((matched || moved) && logged++ < 40) LOG("[mod fullscreen-mode] frame %d: %d of %d canvas scalers set to match the height, %d containers centred (screen %dx%d)", g_frame, matched, scalers, moved, sw, sh);
+    if ((matched || g_changed) && logged++ < 40)
+        LOG("[mod fullscreen-mode] frame %d: %d of %d canvas scalers set to match, %d canvases laid out (screen %dx%d): %d elements adjusted of %d seen (%d left, %d right, %d centred, %d stretched, %d left alone)", g_frame, matched, scalers, laid, sw, sh, g_changed, g_act[ACT_LEFT] + g_act[ACT_RIGHT] + g_act[ACT_CENTER] + g_act[ACT_STRETCH] + g_act[ACT_SKIP] + g_act[ACT_SCALED], g_act[ACT_LEFT], g_act[ACT_RIGHT], g_act[ACT_CENTER], g_act[ACT_STRETCH], g_act[ACT_SKIP] + g_act[ACT_SCALED]);
 }
 
 static void frame_run(uint64_t *r, int param) {
