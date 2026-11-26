@@ -1,9 +1,9 @@
 // Based on Bat'ko Makhno's Resolution Fix (Steam Workshop 2893583716)
 #include "dm.h"
 #include "front.h"
-#include "dm_input.h"
 #include "hle_mods_gen.h"
 #include <math.h>
+#include <pthread.h>
 
 void dm_mod_gate_run(uint64_t *regs, int param, void (*fn)(uint64_t *, int));
 void dm_nvn_canvas_size(int *w, int *h);
@@ -122,13 +122,16 @@ static rec_t s_rec[K_REC_CAP];
 static int s_rec_n, g_budget, g_changed, g_act[ACT_COUNT];
 static ov_t s_ov[K_OV_MAX];
 static slot_t s_tab[K_TAB];
-static int s_ov_n, s_paths, s_idx, s_edit = -1, s_select, s_loaded, s_pick_n, s_pick_i, s_hold[4];
+static int s_ov_n, s_paths, s_idx, s_edit = -1, s_loaded, s_pick_n, s_pick_i;
 static uint32_t s_par_h[K_MAX_DEPTH + 4], s_sel_h;
 static char s_pseg[K_PICK_DEPTH + 2][K_SEG_MAX], s_sel_key[K_KEY_MAX];
 static pick_t s_pick[K_PICK_MAX];
 static void *s_sel_tf, *s_hl_img, *s_hl_tf, *s_hl_src, *g_image_type;
 static float s_last_nx = -1.0f, s_last_ny = -1.0f;
-static uint64_t s_prev_keys;
+typedef struct { int kind; float a, b; } fs_cmd_t;
+static fs_cmd_t s_q[64];
+static int s_qh, s_qt;
+static pthread_mutex_t s_qm = PTHREAD_MUTEX_INITIALIZER;
 
 static uint8_t *main_base(void) {
     if (!s_main)
@@ -943,12 +946,40 @@ static void sweep_ui(void) {
         LOG("[mod fullscreen-mode] frame %d: %d of %d canvas scalers set to match, %d canvases laid out (screen %dx%d): %d elements adjusted of %d seen (%d left, %d right, %d centred, %d stretched, %d expanded, %d containers passed, %d left alone)", g_frame, matched, scalers, laid, sw, sh, g_changed, g_act[ACT_LEFT] + g_act[ACT_RIGHT] + g_act[ACT_CENTER] + g_act[ACT_STRETCH] + g_act[ACT_COVER] + g_act[ACT_THRU] + g_act[ACT_SKIP] + g_act[ACT_SCALED], g_act[ACT_LEFT], g_act[ACT_RIGHT], g_act[ACT_CENTER], g_act[ACT_STRETCH], g_act[ACT_COVER], g_act[ACT_THRU], g_act[ACT_SKIP] + g_act[ACT_SCALED]);
 }
 
+__attribute__((weak)) void front_layout_panel(int show) { (void)show; }
+__attribute__((weak)) void front_layout_state(const char *key, int mode, int index, int total, float dx, float dy, int placements) { (void)key; (void)mode; (void)index; (void)total; (void)dx; (void)dy; (void)placements; }
+
+static void q_push(int kind, float a, float b) {
+    pthread_mutex_lock(&s_qm);
+    int next = (s_qt + 1) % 64;
+    if (next != s_qh) {
+        s_q[s_qt] = (fs_cmd_t){kind, a, b};
+        s_qt = next;
+    }
+    pthread_mutex_unlock(&s_qm);
+}
+
+static int q_pop(fs_cmd_t *c) {
+    pthread_mutex_lock(&s_qm);
+    int ok = s_qh != s_qt;
+    if (ok) {
+        *c = s_q[s_qh];
+        s_qh = (s_qh + 1) % 64;
+    }
+    pthread_mutex_unlock(&s_qm);
+    return ok;
+}
+
+void dm_layout_pick(float nx, float ny) { q_push(0, nx, ny); }
+
+void dm_layout_cmd(int cmd, float a, float b) { q_push(cmd, a, b); }
+
 static int edit_enabled(void) {
     if (s_edit < 0) {
         const char *v = getenv("DM_MOD_FULLSCREEN_EDIT");
         s_edit = v && v[0] == '1';
         if (s_edit) s_paths = 1;
-        LOG("[mod fullscreen-mode] layout editor %s (DM_MOD_FULLSCREEN_EDIT=%s): the special button toggles select mode, tap an element to select it, tap the same spot or ZL / ZR to step through the elements under it, L / R change its placement (auto, left, centre, right, stretch, expand), the D-pad nudges it, Y resets it, B deselects, X saves %s", s_edit ? "on" : "off", v ? v : "unset", layout_path());
+        LOG("[mod fullscreen-mode] layout editor %s (DM_MOD_FULLSCREEN_EDIT=%s): the Layout button opens the editor window, with Select on a tap picks an element, the window sets its placement and nudges it, Save writes %s", s_edit ? "on" : "off", v ? v : "unset", layout_path());
     }
     return s_edit;
 }
@@ -1096,6 +1127,18 @@ static void sel_clear(void) {
     s_pick_n = 0;
 }
 
+static int ov_live(void) {
+    int n = 0;
+    for (int i = 0; i < s_ov_n; i++)
+        if (s_ov[i].key[0]) n++;
+    return n;
+}
+
+static void push_state(void) {
+    const ov_t *o = ov_find(s_sel_h);
+    front_layout_state(s_sel_tf ? s_sel_key : "", o ? o->mode : OV_AUTO, s_pick_i + 1, s_pick_n, o ? o->dx : 0.0f, o ? o->dy : 0.0f, ov_live());
+}
+
 static void edit_changed(const ov_t *o) {
     if (o) {
         if (s_hl_img && alive(s_hl_img)) FN(K_GRAPHIC_SET_COLOR, void, void *, rgba, const void *)(s_hl_img, k_ov_color[o->mode], NULL);
@@ -1112,10 +1155,10 @@ static ov_t *sel_ov(void) {
 static void sel_tidy(ov_t *o) {
     if (o && o->mode == OV_AUTO && o->dx == 0.0f && o->dy == 0.0f) {
         ov_drop(o);
-        edit_changed(NULL);
         if (s_hl_img && alive(s_hl_img)) FN(K_GRAPHIC_SET_COLOR, void, void *, rgba, const void *)(s_hl_img, k_ov_color[OV_AUTO], NULL);
         LOG("[mod fullscreen-mode] edit: \"%s\" back to auto", s_sel_key);
-    }
+        g_next_ui = g_frame;
+    } else edit_changed(o);
 }
 
 static void edit_tap(float nx, float ny) {
@@ -1137,70 +1180,55 @@ static void edit_tap(float nx, float ny) {
     sel_set(&s_pick[idx]);
 }
 
-static void edit_step(int dir) {
-    if (s_pick_n <= 0) return;
-    s_pick_i = (s_pick_i + s_pick_n + dir) % s_pick_n;
-    sel_set(&s_pick[s_pick_i]);
-}
-
-static void edit_nudge(uint64_t keys) {
-    static const uint64_t bits[4] = {DM_BTN_LEFT, DM_BTN_RIGHT, DM_BTN_UP, DM_BTN_DOWN};
-    float d[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    int fire = 0;
-    for (int i = 0; i < 4; i++) {
-        s_hold[i] = (keys & bits[i]) ? s_hold[i] + 1 : 0;
-        int h = s_hold[i];
-        if (h == 1 || (h > 20 && h % 2 == 0)) {
-            d[i] = h > 90 ? 8.0f : h > 45 ? 4.0f : 1.0f;
-            fire = 1;
+static void edit_exec(const fs_cmd_t *c) {
+    if (c->kind == 0) { edit_tap(c->a, c->b); return; }
+    if (c->kind == DM_LAYOUT_SAVE) { layout_save(); return; }
+    if (c->kind == DM_LAYOUT_DESELECT) { sel_clear(); return; }
+    if (!s_sel_tf) return;
+    if (c->kind == DM_LAYOUT_STEP) {
+        if (s_pick_n > 0) {
+            s_pick_i = (s_pick_i + s_pick_n + (c->a < 0.0f ? -1 : 1)) % s_pick_n;
+            sel_set(&s_pick[s_pick_i]);
+        }
+        return;
+    }
+    if (c->kind == DM_LAYOUT_MODE) {
+        int m = (int)c->a;
+        if (m < 0 || m >= OV_COUNT) return;
+        ov_t *o = sel_ov();
+        if (!o) return;
+        o->mode = (uint8_t)m;
+        sel_tidy(o);
+        return;
+    }
+    if (c->kind == DM_LAYOUT_NUDGE) {
+        ov_t *o = sel_ov();
+        if (!o) return;
+        o->dx += c->a;
+        o->dy += c->b;
+        sel_tidy(o);
+        return;
+    }
+    if (c->kind == DM_LAYOUT_RESET) {
+        ov_t *o = ov_find(s_sel_h);
+        if (o) {
+            o->mode = OV_AUTO;
+            o->dx = o->dy = 0.0f;
+            sel_tidy(o);
         }
     }
-    if (!fire) return;
-    ov_t *o = sel_ov();
-    if (!o) return;
-    o->dx += d[1] - d[0];
-    o->dy += d[2] - d[3];
-    if (o->dx == 0.0f && o->dy == 0.0f && o->mode == OV_AUTO) { sel_tidy(o); return; }
-    edit_changed(o);
 }
 
 static void edit_run(void) {
     if (!edit_enabled() || g_state != 1 || !g_applied) return;
-    int frame = FN(K_TIME_FRAMECOUNT, int, const void *)(NULL);
-    uint64_t keys = dm_mod_keys(), down = keys & ~s_prev_keys;
-    s_prev_keys = keys;
-    dm_mouse_frame_t mf;
-    dm_mouse_frame((uint64_t)frame, &mf);
-    if (down & dm_mod_special()) {
-        s_select = !s_select;
-        if (!s_select) sel_clear();
-        LOG("[mod fullscreen-mode] edit: select mode %s", s_select ? "on" : "off");
-        return;
-    }
-    if (!s_select) return;
-    dm_mod_input_mask(DM_BTN_LEFT | DM_BTN_RIGHT | DM_BTN_UP | DM_BTN_DOWN | DM_BTN_X | DM_BTN_Y | DM_BTN_B | DM_BTN_L | DM_BTN_R | DM_BTN_ZL | DM_BTN_ZR, 120);
+    static int shown;
+    if (!shown) { shown = 1; front_layout_panel(1); push_state(); }
     if (s_hl_img && !alive(s_hl_img)) hl_clear();
     if (s_sel_tf && !alive(s_sel_tf)) sel_clear();
-    if (mf.down & DM_MOUSE_LEFT) { edit_tap(mf.nx, mf.ny); return; }
-    if (down & DM_BTN_X) { layout_save(); return; }
-    if (!s_sel_tf) return;
-    if (down & DM_BTN_B) { sel_clear(); return; }
-    if (down & DM_BTN_ZL) { edit_step(-1); return; }
-    if (down & DM_BTN_ZR) { edit_step(1); return; }
-    if (down & (DM_BTN_L | DM_BTN_R)) {
-        ov_t *o = sel_ov();
-        if (!o) return;
-        o->mode = (uint8_t)((o->mode + OV_COUNT + ((down & DM_BTN_R) ? 1 : -1)) % OV_COUNT);
-        if (o->mode == OV_AUTO && o->dx == 0.0f && o->dy == 0.0f) sel_tidy(o);
-        else edit_changed(o);
-        return;
-    }
-    if (down & DM_BTN_Y) {
-        ov_t *o = ov_find(s_sel_h);
-        if (o) { o->mode = OV_AUTO; o->dx = o->dy = 0.0f; sel_tidy(o); }
-        return;
-    }
-    edit_nudge(keys);
+    fs_cmd_t c;
+    int any = 0;
+    while (q_pop(&c)) { edit_exec(&c); any = 1; }
+    if (any) push_state();
 }
 
 static void frame_run(uint64_t *r, int param) {

@@ -74,3 +74,8 @@ void dm_key_press(uint32_t usage, int down);         // presses or releases one 
 // the next transaction that succeeds commits as usual, and the front end need not do any recovery. err = the first failing errno (ENOSPC = 28 means out of space). Called on the game thread; the front end switches to the main thread itself and must not block
 void front_save_failed(int err);
 void front_game_clicked(void);
+enum { DM_LAYOUT_MODE = 1, DM_LAYOUT_NUDGE, DM_LAYOUT_STEP, DM_LAYOUT_RESET, DM_LAYOUT_DESELECT, DM_LAYOUT_SAVE };
+void front_layout_panel(int show);
+void front_layout_state(const char *key, int mode, int index, int total, float dx, float dy, int placements);
+void dm_layout_pick(float nx, float ny);
+void dm_layout_cmd(int cmd, float a, float b);

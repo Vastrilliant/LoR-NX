@@ -356,6 +356,7 @@ void front_progress(const char *title, long done, long total) {
                              [NSNumberFormatter localizedStringFromNumber:@(total) numberStyle:NSNumberFormatterDecimalStyle]];
     });
 }
+UIView *front_ios_overlay_root(void) { return g_root.view; }
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 void front_run(void (*guest)(void)) { guest(); }   // Already on main.m's big-stack thread
 
