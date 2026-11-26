@@ -65,6 +65,11 @@ int dm_opmode(void);
 #define K_EDGE_FRAC 0.06
 #define K_STRETCH_MARGIN 0.08
 #define K_POINT_FRAC 0.05
+#define K_GROUP_EDGE 0.06
+#define K_GROUP_OFF 0.20
+#define K_GROUP_GAP 0.08
+#define K_ART_DEPTH 1
+#define K_SCALE_MIN 0.05
 #define K_APPLY_EPS 0.5
 #define K_DESIGN_ASPECT (16.0 / 9.0)
 
@@ -73,7 +78,7 @@ typedef struct { float x, y, z; } vec3;
 typedef struct { float x, y, w, h; } rect4;
 typedef struct { void *obj; float oa[4], oo[4], aa[4], ao[4], sh; uint8_t seen, logged, vlog, keep, kind, act; } rec_t;
 typedef struct { int ax; double size, design, osize, cscale; } cv_t;
-typedef struct { double des0, dsz, act0, asz, kp, v0, vsz; } par_t;
+typedef struct { double des0, dsz, act0, asz, kp, v0, vsz; int grp; } par_t;
 
 enum { ACT_SKIP, ACT_LEFT, ACT_RIGHT, ACT_CENTER, ACT_STRETCH, ACT_COVER, ACT_THRU, ACT_SCALED, ACT_COUNT };
 
@@ -423,6 +428,8 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
     double c1 = r->oa[2 + ax] * pp->dsz + r->oo[2 + ax];
     double lo = fmin(c0, c1), hi = fmax(c0, c1);
     double d0 = pp->des0 + lo * pp->kp, d1 = pp->des0 + hi * pp->kp;
+    if (fabs(srel) < K_SCALE_MIN) { g_act[ACT_SCALED]++; return; }
+    int fell = 0;
     if (fabs(srel - 1.0) > 0.01) {
         vec2 pv = FN(K_RT_GET_PIVOT, vec2, void *, const void *)(tf, NULL);
         double piv = d0 + (ax ? pv.y : pv.x) * (d1 - d0), sc = fabs(srel);
@@ -430,7 +437,8 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
         double vlo = fmin(va, vb), vhi = fmax(va, vb);
         int sact = classify(vlo, vhi, cv, 0, &x0, &x1);
         double a0s = 0.0, a1s = 0.0;
-        if (sact == ACT_LEFT || sact == ACT_RIGHT || sact == ACT_CENTER) {
+        if (sact == ACT_STRETCH) fell = 1;
+        else if (sact == ACT_LEFT || sact == ACT_RIGHT || sact == ACT_CENTER) {
             double sh = x0 - vlo;
             if (place_axis(tf, ax, pp->act0, pp->asz, pp->kp, d0 + sh, d1 + sh, &a0s, &a1s)) {
                 rt_read(tf, ca, co);
@@ -441,14 +449,15 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
             }
             g_act[sact]++;
         } else g_act[ACT_SCALED]++;
-        if (!r->logged && log_ok()) {
+        if (!fell && !r->logged && log_ok()) {
             char name[48];
             ascii_name(tf, name, sizeof name);
             r->logged = 1;
             g_log_lines++;
             LOG("[mod fullscreen-mode]   %*s\"%s\" scale %.2f, design %.0f..%.0f: %s", depth * 2, "", name, srel, vlo, vhi, k_act_name[sact == ACT_LEFT || sact == ACT_RIGHT || sact == ACT_CENTER ? sact : ACT_SCALED]);
         }
-        return;
+        if (!fell) return;
+        g_act[ACT_SCALED]--;
     }
     double u0 = r->oa[ay] * pp->vsz + r->oo[ay];
     double u1 = r->oa[2 + ay] * pp->vsz + r->oo[2 + ay];
@@ -459,7 +468,7 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
         if (nchild == 0) {
             if (r->kind == 3 || r->kind == 4) art = r->kind == 3;
             else {
-                art = !*bleed;
+                art = !*bleed && depth <= K_ART_DEPTH;
                 r->kind = art ? 3 : 4;
                 r->keep = 1;
             }
@@ -468,6 +477,12 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
     }
     double t0 = 0.0, t1 = 0.0;
     int act = classify(d0, d1, cv, art, &t0, &t1);
+    if (pp->grp && (act == ACT_LEFT || act == ACT_RIGHT)) {
+        double gp = (cv->size - cv->design) / 2.0;
+        t0 = d0 + gp;
+        t1 = d1 + gp;
+        act = ACT_CENTER;
+    }
     if (act == ACT_LEFT || act == ACT_RIGHT || act == ACT_CENTER) {
         if (nchild < 0) nchild = child_count(tf);
         act = settle_container(tf, r, cv, d0, d1, hi - lo, kpn, nchild, act, &t0, &t1);
@@ -523,11 +538,53 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
     np.kp = kpn;
     np.v0 = v0;
     np.vsz = ((double)r->oa[2 + ay] - r->oa[ay]) * pp->vsz + ((double)r->oo[2 + ay] - r->oo[ay]);
+    np.grp = 0;
     process_children(tf, cv, &np, depth + 1);
 }
 
-static void process_children(void *tf, const cv_t *cv, const par_t *pp, int depth) {
+static int group_centred(void *tf, const cv_t *cv, const par_t *pp, int n) {
+    if (n < 2 || n > K_UNION_MAX) return 0;
+    int ax = cv->ax, got = 0;
+    double dw = cv->design, lo = 0.0, hi = 0.0, iv[K_UNION_MAX][2];
+    for (int i = 0; i < n; i++) {
+        void *child = child_at(tf, i);
+        if (!child || (g_skip_inactive && !active_node(child))) continue;
+        g_budget--;
+        float ca[4], co[4];
+        rt_read(child, ca, co);
+        rec_t *cr = rec_find(child);
+        int keep_a = cr && cr->seen && same4(ca, cr->aa, 1e-5f), keep_o = cr && cr->seen && same4(co, cr->ao, 1e-3f);
+        const float *oa = keep_a ? cr->oa : ca, *oo = keep_o ? cr->oo : co;
+        double c0 = oa[ax] * pp->dsz + oo[ax], c1 = oa[2 + ax] * pp->dsz + oo[2 + ax];
+        double a = pp->des0 + fmin(c0, c1) * pp->kp, b = pp->des0 + fmax(c0, c1) * pp->kp;
+        if (b - a >= K_BAND_FRAC * dw || b < -K_APPLY_EPS || a > dw + K_APPLY_EPS) continue;
+        if (!got || a < lo) lo = a;
+        if (!got || b > hi) hi = b;
+        iv[got][0] = a;
+        iv[got][1] = b;
+        got++;
+    }
+    if (got < 2) return 0;
+    for (int i = 1; i < got; i++) {
+        double k0 = iv[i][0], k1 = iv[i][1];
+        int j = i - 1;
+        while (j >= 0 && iv[j][0] > k0) { iv[j + 1][0] = iv[j][0]; iv[j + 1][1] = iv[j][1]; j--; }
+        iv[j + 1][0] = k0;
+        iv[j + 1][1] = k1;
+    }
+    double reach = iv[0][1];
+    for (int i = 1; i < got; i++) {
+        if (iv[i][0] - reach > K_GROUP_GAP * dw) return 0;
+        if (iv[i][1] > reach) reach = iv[i][1];
+    }
+    return lo >= K_GROUP_EDGE * dw && dw - hi >= K_GROUP_EDGE * dw && fabs((lo + hi) / 2.0 - dw / 2.0) <= K_GROUP_OFF * dw;
+}
+
+static void process_children(void *tf, const cv_t *cv, const par_t *pp0, int depth) {
     int n = child_count(tf), bleed = 0;
+    par_t lp = *pp0;
+    lp.grp = group_centred(tf, cv, pp0, n);
+    const par_t *pp = &lp;
     for (int i = 0; i < n && g_budget > 0; i++) {
         void *child = child_at(tf, i);
         if (!child || (g_skip_inactive && !active_node(child))) continue;
