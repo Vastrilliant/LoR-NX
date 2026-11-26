@@ -380,7 +380,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 - (void)pushGame {
     CGRect b = self.bounds; CGFloat w = b.size.width, h = b.size.height;
     if (w <= 0 || h <= 0) return;
-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+    dm_fit_picture(&w, &h);
     CGFloat x0 = (b.size.width - w) / 2, y0 = (b.size.height - h) / 2;
     dm_touch t[16]; int n = 0;
     for (int i = 0; i < 16; i++) if (_game[i]) {
@@ -452,7 +452,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 // turns into notches (down = wheel up, as dragging a page down shows what is above); their distance changing is a zoom, also the wheel (spread = wheel up), and only the one that travels further counts; the gesture stays over until every finger has lifted. Each click, each notch and each key press gives a haptic tap. A third finger does nothing. While the touch-ui mod has the combat camera armed (dm_touch_pan_armed), dragging pans the camera instead (dm_touch_pan): one finger in Touch pointer mode, one finger after the hold in Trackpad, and the mid point of two fingers, which no longer scroll the wheel; their pinch still zooms.
 - (CGRect)picture {   // the 16:9 picture that front_ios.m centres in the screen, as pushGame maps touches onto it
     CGRect b = self.bounds; CGFloat w = b.size.width, h = b.size.height;
-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+    dm_fit_picture(&w, &h);
     return CGRectMake((b.size.width - w) / 2, (b.size.height - h) / 2, w, h);
 }
 - (void)padCancelHold { [_padTimer invalidate]; _padTimer = nil; }
@@ -498,7 +498,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 - (CGPoint)padCentre { CGFloat x = 0, y = 0; for (UITouch *u in _pad) { CGPoint p = [u locationInView:self]; x += p.x; y += p.y; } return CGPointMake(x / _pad.count, y / _pad.count); }
 - (void)padDragEnd { if (!_padDrag) return; _padDrag = NO; _lmbEpoch++; dm_mouse_button(DM_MOUSE_LEFT, 0); }   // fewer than three fingers: the left button goes up
 - (void)padPanTo:(CGPoint)p {
-    CGFloat k = 1280.0 / [self picture].size.width;
+    CGFloat k = 720.0 / [self picture].size.height;
     dm_touch_pan((float)((p.x - _padPanLast.x) * k), (float)((p.y - _padPanLast.y) * k));
     _padPanLast = p;
 }
@@ -549,7 +549,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         }
         if (_padPan) { [self padPanTo:p]; _padLast = p; return; }
         if (pointer_touch()) { [self ptPlaceCursor:p]; _padLast = p; return; }   // the cursor is under the finger
-        CGFloat k = 1280.0 / [self picture].size.width * K_TP_GAIN * touchpad_speed();
+        CGFloat k = 720.0 / [self picture].size.height * K_TP_GAIN * touchpad_speed();
         dm_mouse_move((p.x - _padLast.x) * k, (p.y - _padLast.y) * k); _padLast = p;
     } else if (_pad.count == 3 && !pointer_touch() && ([ts containsObject:_pad[0]] || [ts containsObject:_pad[1]] || [ts containsObject:_pad[2]])) {
         // Trackpad, three fingers: swiping (the centre leaving the slop) presses the left button, and the centre then moves the cursor, dragging; a finger lifting lets go
@@ -559,7 +559,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
             _padDrag = YES; _lmbEpoch++; dm_mouse_button(DM_MOUSE_LEFT, 1);
             _padLast3 = c; return;
         }
-        CGFloat k = 1280.0 / [self picture].size.width * K_TP_GAIN * touchpad_speed();
+        CGFloat k = 720.0 / [self picture].size.height * K_TP_GAIN * touchpad_speed();
         dm_mouse_move((c.x - _padLast3.x) * k, (c.y - _padLast3.y) * k); _padLast3 = c;
     } else if (_pad.count == 2 && ([ts containsObject:_pad[0]] || [ts containsObject:_pad[1]])) {
         // Two fingers are a scroll (their mid point moves up or down) or a zoom (they move apart or together), the same in both Pointer Modes. Both are the wheel: a pinch out is wheel up (zoom in).
