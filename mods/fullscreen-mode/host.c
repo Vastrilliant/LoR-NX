@@ -43,6 +43,22 @@ int dm_opmode(void);
 #define K_OBJECT_DESTROY 0x19B5310u
 #define K_TIME_FRAMECOUNT 0x19B9380u
 #define K_RT_GET_PIVOT 0x19BA900u
+#define K_TRANSFORM_GET_PARENT 0x19BC440u
+#define K_TRANSFORM_GET_SIBLING 0x19BF870u
+#define K_TRANSFORM_GET_POSITION 0x19BC6B0u
+#define K_TRANSFORM_SET_POSITION 0x19BC780u
+#define K_TRANSFORM_GET_LOCALSCALE 0x19BD6C0u
+#define K_RENDERER_GET_BOUNDS 0x17FA410u
+#define K_RENDERER_GET_ENABLED 0x17FAA60u
+#define K_CAMERA_W2S 0x17EC830u
+#define K_CAMERA_GET_ALL 0x17EE210u
+#define K_CAMERA_GET_MASK 0x17E9BE0u
+#define K_CAMERA_GET_DEPTH 0x17E9940u
+#define K_CAMERA_GET_ORTHO 0x17E9510u
+#define K_CAMERA_GET_PW 0x17EB4B0u
+#define K_CAMERA_GET_PH 0x17EB500u
+#define K_CAMERA_GET_TEXTURE 0x17EB5F0u
+#define K_GO_GET_LAYER 0x19AFBF0u
 #define K_TRANSFORM_GET_LOSSY_SCALE 0x19BFA20u
 #define F_ARRAY_LEN 0x18
 #define F_ARRAY_DATA 0x20
@@ -84,10 +100,12 @@ int dm_opmode(void);
 #define K_DESIGN_ASPECT (16.0 / 9.0)
 #define K_OV_MAX 512
 #define K_TAB 4096
-#define K_KEY_MAX 320
+#define K_KEY_MAX 2048
 #define K_SEG_MAX 48
-#define K_PICK_MAX 48
-#define K_PICK_DEPTH 24
+#define K_PICK_DEPTH 64
+#define K_PICK_BUDGET 4000000
+#define K_WORLD_RETRY 120
+#define K_WORLD_EPS 0.0001f
 #define K_SAME_SPOT 0.012f
 #define K_HL_ALPHA 0.4f
 #define K_LAYOUT_FILE "fullscreen_layout.txt"
@@ -102,7 +120,9 @@ typedef struct { float r, g, b, a; } rgba;
 typedef struct { double x0, xs, y0, ys, kp; } pk_t;
 typedef struct { uint32_t h; uint8_t mode; float dx, dy; char key[K_KEY_MAX]; } ov_t;
 typedef struct { uint32_t h; int16_t ov; uint8_t anc; } slot_t;
-typedef struct { void *tf; uint32_t h; int depth; double area; char key[K_KEY_MAX]; } pick_t;
+typedef struct { void *tf, *rend, *cam; uint32_t h; int depth, world; double area; char key[K_KEY_MAX]; } pick_t;
+typedef struct { float x, y, z, ex, ey, ez; } bounds_t;
+typedef struct { void *tf, *rend, *cam; int have, pw, ph; vec3 bp, bs, ap, as; bounds_t bb; } wld_t;
 
 enum { OV_AUTO, OV_LEFT, OV_CENTER, OV_RIGHT, OV_STRETCH, OV_EXPAND, OV_COUNT };
 
@@ -125,8 +145,12 @@ static slot_t s_tab[K_TAB];
 static int s_ov_n, s_paths, s_idx, s_edit = -1, s_loaded, s_pick_n, s_pick_i;
 static uint32_t s_par_h[K_MAX_DEPTH + 4], s_sel_h;
 static char s_pseg[K_PICK_DEPTH + 2][K_SEG_MAX], s_sel_key[K_KEY_MAX];
-static pick_t s_pick[K_PICK_MAX];
-static void *s_sel_tf, *s_hl_img, *s_hl_tf, *s_hl_src, *g_image_type;
+static pick_t *s_pick;
+static int s_pick_cap, s_sel_world, s_wld_next;
+static double s_unit = 1.0;
+static wld_t s_wld[K_OV_MAX];
+static void *s_sel_tf, *s_sel_rend, *s_sel_cam, *s_ui_root, *s_hl_img, *s_hl_tf, *s_hl_src, *g_image_type, *g_rend_type;
+static int g_rend_tries;
 static float s_last_nx = -1.0f, s_last_ny = -1.0f;
 typedef struct { int kind; float a, b; } fs_cmd_t;
 static fs_cmd_t s_q[64];
@@ -443,7 +467,10 @@ static ov_t *ov_make(const char *key) {
     return o;
 }
 
+static void world_release(int idx);
+
 static void ov_drop(ov_t *o) {
+    world_release((int)(o - s_ov));
     slot_t *sl = slot_get(o->h, 0);
     if (sl) sl->ov = -1;
     memset(o, 0, sizeof *o);
@@ -478,7 +505,7 @@ static void layout_load(void) {
 static void layout_save(void) {
     FILE *f = fopen(layout_path(), "w");
     if (!f) { LOG("[mod fullscreen-mode] layout: cannot write %s", layout_path()); return; }
-    fprintf(f, "# fullscreen-mode layout, one placement per line: canvas path|mode|dx|dy (design units, dy up)\n");
+    fprintf(f, "# fullscreen-mode layout, one placement per line: path|mode|dx|dy (c: canvas paths in design units, w: scene paths in screen pixels, dy up)\n");
     int n = 0;
     for (int i = 0; i < s_ov_n; i++) {
         const ov_t *o = &s_ov[i];
@@ -979,9 +1006,280 @@ static int edit_enabled(void) {
         const char *v = getenv("DM_MOD_FULLSCREEN_EDIT");
         s_edit = v && v[0] == '1';
         if (s_edit) s_paths = 1;
-        LOG("[mod fullscreen-mode] layout editor %s (DM_MOD_FULLSCREEN_EDIT=%s): the Layout button opens the editor window, with Select on a tap picks an element, the window sets its placement and nudges it, Save writes %s", s_edit ? "on" : "off", v ? v : "unset", layout_path());
+        LOG("[mod fullscreen-mode] layout editor %s (DM_MOD_FULLSCREEN_EDIT=%s): the Layout button opens the editor window, with Select on a tap picks an element (a UI element or a scene object), the window sets its placement and nudges it, Save writes %s", s_edit ? "on" : "off", v ? v : "unset", layout_path());
     }
     return s_edit;
+}
+
+static pick_t *pick_slot(void) {
+    if (s_pick_n >= s_pick_cap) {
+        int cap = s_pick_cap ? s_pick_cap * 2 : 128;
+        pick_t *p = realloc(s_pick, (size_t)cap * sizeof *p);
+        if (!p) return NULL;
+        s_pick = p;
+        s_pick_cap = cap;
+    }
+    return &s_pick[s_pick_n];
+}
+
+static int is_world_key(const char *key) {
+    return key[0] == 'w' && key[1] == ':';
+}
+
+static void *rend_type(void) {
+    if (!g_rend_type && g_rend_tries < K_TYPE_TRIES) {
+        g_rend_tries++;
+        g_rend_type = find_type("UnityEngine.Renderer, UnityEngine.CoreModule");
+        LOG("[mod fullscreen-mode] types: Renderer %p", g_rend_type);
+    }
+    return g_rend_type;
+}
+
+static int near3(vec3 a, vec3 b) {
+    return fabsf(a.x - b.x) < K_WORLD_EPS && fabsf(a.y - b.y) < K_WORLD_EPS && fabsf(a.z - b.z) < K_WORLD_EPS;
+}
+
+static vec3 tf_position(void *tf) {
+    return FN(K_TRANSFORM_GET_POSITION, vec3, void *, const void *)(tf, NULL);
+}
+
+static vec3 tf_scale(void *tf) {
+    return FN(K_TRANSFORM_GET_LOCALSCALE, vec3, void *, const void *)(tf, NULL);
+}
+
+static int world_key(void *tf, char *out, size_t cap, char *leaf) {
+    char seg[K_PICK_DEPTH + 2][K_SEG_MAX];
+    int n = 0;
+    void *cur = tf;
+    while (cur && alive(cur) && n < K_PICK_DEPTH) {
+        int idx = FN(K_TRANSFORM_GET_SIBLING, int, void *, const void *)(cur, NULL);
+        seg_make(cur, idx, seg[n++]);
+        cur = FN(K_TRANSFORM_GET_PARENT, void *, void *, const void *)(cur, NULL);
+    }
+    if (n == 0 || (cur && alive(cur))) return 0;
+    size_t len = 0;
+    int w = snprintf(out, cap, "w:");
+    if (w < 0 || (size_t)w >= cap) return 0;
+    len = (size_t)w;
+    for (int i = n - 1; i >= 0; i--) {
+        w = snprintf(out + len, cap - len, i == n - 1 ? "%s" : "/%s", seg[i]);
+        if (w < 0 || len + (size_t)w >= cap) return 0;
+        len += (size_t)w;
+    }
+    if (leaf) snprintf(leaf, K_SEG_MAX, "%s", seg[0]);
+    return 1;
+}
+
+static void *world_camera(void *go) {
+    void *arr = FN(K_CAMERA_GET_ALL, void *, const void *)(NULL);
+    uint64_t n = arr ? *(const uint64_t *)((uintptr_t)arr + F_ARRAY_LEN) : 0;
+    int layer = FN(K_GO_GET_LAYER, int, void *, const void *)(go, NULL);
+    void *best = NULL;
+    float best_depth = 0.0f;
+    for (uint64_t i = 0; i < n; i++) {
+        void *cam = *(void *const *)((uintptr_t)arr + F_ARRAY_DATA + 8 * i);
+        if (!alive(cam)) continue;
+        if (!((FN(K_CAMERA_GET_MASK, int, void *, const void *)(cam, NULL) >> layer) & 1)) continue;
+        if (alive(FN(K_CAMERA_GET_TEXTURE, void *, void *, const void *)(cam, NULL))) continue;
+        float depth = FN(K_CAMERA_GET_DEPTH, float, void *, const void *)(cam, NULL);
+        if (!best || depth >= best_depth) { best = cam; best_depth = depth; }
+    }
+    return best;
+}
+
+static int w2s(void *cam, vec3 p, double *x, double *y) {
+    vec3 r = FN(K_CAMERA_W2S, vec3, void *, vec3, const void *)(cam, p, NULL);
+    if (r.z <= 0.0f && !(FN(K_CAMERA_GET_ORTHO, uint8_t, void *, const void *)(cam, NULL) & 1)) return 0;
+    *x = r.x;
+    *y = r.y;
+    return 1;
+}
+
+static int bounds_rect(void *cam, const bounds_t *b, double *x0, double *x1, double *y0, double *y1) {
+    double lx = 0.0, hx = 0.0, ly = 0.0, hy = 0.0;
+    int got = 0;
+    for (int k = 0; k < 8; k++) {
+        vec3 p = {b->x + ((k & 1) ? b->ex : -b->ex), b->y + ((k & 2) ? b->ey : -b->ey), b->z + ((k & 4) ? b->ez : -b->ez)};
+        double x, y;
+        if (!w2s(cam, p, &x, &y)) continue;
+        if (!got || x < lx) lx = x;
+        if (!got || x > hx) hx = x;
+        if (!got || y < ly) ly = y;
+        if (!got || y > hy) hy = y;
+        got = 1;
+    }
+    *x0 = lx;
+    *x1 = hx;
+    *y0 = ly;
+    *y1 = hy;
+    return got && hx - lx > 1.0 && hy - ly > 1.0;
+}
+
+static int renderer_rect(void *cam, void *rend, double *x0, double *x1, double *y0, double *y1) {
+    bounds_t b = FN(K_RENDERER_GET_BOUNDS, bounds_t, void *, const void *)(rend, NULL);
+    return bounds_rect(cam, &b, x0, x1, y0, y1);
+}
+
+static void world_restore(wld_t *w) {
+    if (w->have && w->tf && alive(w->tf)) {
+        FN(K_TRANSFORM_SET_LOCALSCALE, void, void *, vec3, const void *)(w->tf, w->bs, NULL);
+        FN(K_TRANSFORM_SET_POSITION, void, void *, vec3, const void *)(w->tf, w->bp, NULL);
+    }
+}
+
+static void world_release(int idx) {
+    if (idx < 0 || idx >= K_OV_MAX) return;
+    world_restore(&s_wld[idx]);
+    memset(&s_wld[idx], 0, sizeof s_wld[idx]);
+}
+
+static void world_resolve(void) {
+    void *rt = rend_type();
+    if (!rt) return;
+    char leaf[K_SEG_MAX];
+    int want = 0;
+    for (int i = 0; i < s_ov_n; i++)
+        if (s_ov[i].key[0] && is_world_key(s_ov[i].key) && (!s_wld[i].tf || !alive(s_wld[i].tf))) want++;
+    if (!want) return;
+    void *arr = FN(K_RESOURCES_FINDALL, void *, void *, const void *)(rt, NULL);
+    uint64_t n = arr ? *(const uint64_t *)((uintptr_t)arr + F_ARRAY_LEN) : 0;
+    for (uint64_t k = 0; k < n && want > 0; k++) {
+        void *r = *(void *const *)((uintptr_t)arr + F_ARRAY_DATA + 8 * k);
+        if (!alive(r)) continue;
+        void *tf = FN(K_COMPONENT_GET_TRANSFORM, void *, void *, const void *)(r, NULL);
+        if (!alive(tf) || *(void *const *)tf == s_rt_klass || !active_node(tf)) continue;
+        seg_make(tf, FN(K_TRANSFORM_GET_SIBLING, int, void *, const void *)(tf, NULL), leaf);
+        for (int i = 0; i < s_ov_n; i++) {
+            ov_t *o = &s_ov[i];
+            if (!o->key[0] || !is_world_key(o->key) || (s_wld[i].tf && alive(s_wld[i].tf))) continue;
+            const char *last = strrchr(o->key, '/');
+            if (strcmp(last ? last + 1 : o->key + 2, leaf)) continue;
+            char key[K_KEY_MAX];
+            if (!world_key(tf, key, sizeof key, NULL) || key_hash(key, 0) != o->h) continue;
+            memset(&s_wld[i], 0, sizeof s_wld[i]);
+            s_wld[i].tf = tf;
+            s_wld[i].rend = r;
+            want--;
+            LOG("[mod fullscreen-mode] world: \"%s\" found", o->key);
+        }
+    }
+}
+
+static void world_apply(int i) {
+    ov_t *o = &s_ov[i];
+    wld_t *w = &s_wld[i];
+    void *go = FN(K_COMPONENT_GET_GAMEOBJECT, void *, void *, const void *)(w->tf, NULL);
+    if (!alive(go) || !alive(w->rend)) return;
+    if (!w->cam || !alive(w->cam)) w->cam = world_camera(go);
+    if (!w->cam) return;
+    int pw = FN(K_CAMERA_GET_PW, int, void *, const void *)(w->cam, NULL), ph = FN(K_CAMERA_GET_PH, int, void *, const void *)(w->cam, NULL);
+    if (pw <= 0 || ph <= 0) return;
+    if (w->have && (pw != w->pw || ph != w->ph)) {
+        world_restore(w);
+        w->have = 0;
+    }
+    vec3 cp = tf_position(w->tf), cs = tf_scale(w->tf);
+    if (w->have && (!near3(cp, w->ap) || !near3(cs, w->as))) w->have = 0;
+    if (!w->have) {
+        w->bp = cp;
+        w->bs = cs;
+        w->bb = FN(K_RENDERER_GET_BOUNDS, bounds_t, void *, const void *)(w->rend, NULL);
+        w->pw = pw;
+        w->ph = ph;
+        w->have = 1;
+        w->ap = cp;
+        w->as = cs;
+    }
+    double bx0, bx1, by0, by1, px, py, ex, ey, fx = 1.0, fy = 1.0;
+    if (!bounds_rect(w->cam, &w->bb, &bx0, &bx1, &by0, &by1) || !w2s(w->cam, w->bp, &px, &py)) return;
+    vec3 ox = {w->bp.x + 1.0f, w->bp.y, w->bp.z}, oy = {w->bp.x, w->bp.y + 1.0f, w->bp.z};
+    double jx0, jx1, jy0, jy1;
+    if (!w2s(w->cam, ox, &jx0, &jx1) || !w2s(w->cam, oy, &jy0, &jy1)) return;
+    double jxx = jx0 - px, jxy = jx1 - py, jyx = jy0 - px, jyy = jy1 - py;
+    double det = jxx * jyy - jyx * jxy;
+    if (fabs(det) < 1e-9) return;
+    double dwp = ph * K_DESIGN_ASPECT, pad = pw > dwp ? (pw - dwp) / 2.0 : 0.0;
+    cv_t cv = {0, (double)pw, dwp, (double)ph, 1.0};
+    double t0 = bx0, t1 = bx1, ty0 = by0, ty1 = by1, bw = bx1 - bx0;
+    if (o->mode != OV_AUTO) ov_apply(o->mode, bx0 - pad, bx1 - pad, &cv, &t0, &t1);
+    if (o->mode == OV_STRETCH && bw > 1e-3) fx = (t1 - t0) / bw;
+    if (o->mode == OV_EXPAND && dwp > 1.0) {
+        double f = (double)pw / dwp, mid = ph / 2.0;
+        fx = fy = f;
+        ty0 = mid + (by0 - mid) * f;
+        ty1 = mid + (by1 - mid) * f;
+    }
+    fx = fmin(fmax(fx, 0.05), 20.0);
+    fy = fmin(fmax(fy, 0.05), 20.0);
+    t0 += o->dx;
+    ty0 += o->dy;
+    ex = px + (bx0 - px) * fx;
+    ey = py + (by0 - py) * fy;
+    double dpx = t0 - ex, dpy = ty0 - ey;
+    double wx = (dpx * jyy - jyx * dpy) / det, wy = (jxx * dpy - jxy * dpx) / det;
+    (void)t1;
+    (void)ty1;
+    vec3 np = {w->bp.x + (float)wx, w->bp.y + (float)wy, w->bp.z};
+    vec3 ns = {w->bs.x * (float)fx, w->bs.y * (float)fy, w->bs.z};
+    if (!near3(ns, cs)) FN(K_TRANSFORM_SET_LOCALSCALE, void, void *, vec3, const void *)(w->tf, ns, NULL);
+    if (!near3(np, cp)) FN(K_TRANSFORM_SET_POSITION, void, void *, vec3, const void *)(w->tf, np, NULL);
+    w->ap = tf_position(w->tf);
+    w->as = tf_scale(w->tf);
+}
+
+static void world_tick(void) {
+    if (g_state != 1 || !g_applied) return;
+    int any = 0, lost = 0;
+    for (int i = 0; i < s_ov_n; i++) {
+        if (!s_ov[i].key[0] || !is_world_key(s_ov[i].key)) continue;
+        any = 1;
+        if (!s_wld[i].tf || !alive(s_wld[i].tf)) {
+            memset(&s_wld[i], 0, sizeof s_wld[i]);
+            lost = 1;
+        }
+    }
+    if (!any) return;
+    if (lost && g_frame >= s_wld_next) {
+        s_wld_next = g_frame + K_WORLD_RETRY;
+        world_resolve();
+    }
+    for (int i = 0; i < s_ov_n; i++)
+        if (s_ov[i].key[0] && is_world_key(s_ov[i].key) && s_wld[i].tf) world_apply(i);
+}
+
+static void pick_world(float nx, float ny) {
+    void *rt = rend_type();
+    if (!rt) return;
+    void *arr = FN(K_RESOURCES_FINDALL, void *, void *, const void *)(rt, NULL);
+    uint64_t n = arr ? *(const uint64_t *)((uintptr_t)arr + F_ARRAY_LEN) : 0;
+    int first = s_pick_n;
+    for (uint64_t k = 0; k < n; k++) {
+        void *r = *(void *const *)((uintptr_t)arr + F_ARRAY_DATA + 8 * k);
+        if (!alive(r) || !(FN(K_RENDERER_GET_ENABLED, uint8_t, void *, const void *)(r, NULL) & 1)) continue;
+        void *tf = FN(K_COMPONENT_GET_TRANSFORM, void *, void *, const void *)(r, NULL);
+        if (!alive(tf) || *(void *const *)tf == s_rt_klass || !active_node(tf)) continue;
+        int dup = 0;
+        for (int d = first; d < s_pick_n && !dup; d++) dup = s_pick[d].tf == tf;
+        if (dup) continue;
+        void *go = FN(K_COMPONENT_GET_GAMEOBJECT, void *, void *, const void *)(tf, NULL);
+        void *cam = alive(go) ? world_camera(go) : NULL;
+        if (!cam) continue;
+        int pw = FN(K_CAMERA_GET_PW, int, void *, const void *)(cam, NULL), ph = FN(K_CAMERA_GET_PH, int, void *, const void *)(cam, NULL);
+        if (pw <= 0 || ph <= 0) continue;
+        double x0, x1, y0, y1, tx = (double)nx * pw, ty = (1.0 - (double)ny) * ph;
+        if (!renderer_rect(cam, r, &x0, &x1, &y0, &y1) || tx < x0 || tx > x1 || ty < y0 || ty > y1) continue;
+        pick_t *slot = pick_slot();
+        if (!slot) return;
+        if (!world_key(tf, slot->key, sizeof slot->key, NULL)) continue;
+        slot->tf = tf;
+        slot->rend = r;
+        slot->cam = cam;
+        slot->h = key_hash(slot->key, 0);
+        slot->depth = 0;
+        slot->world = 1;
+        slot->area = (x1 - x0) * (y1 - y0) * s_unit * s_unit;
+        s_pick_n++;
+    }
 }
 
 static int pick_cmp(const void *a, const void *b) {
@@ -1005,8 +1303,8 @@ static void pick_walk(void *tf, const cv_t *cv, const pk_t *p, int depth, uint32
         double x0 = fmin(xa, xb), x1 = fmax(xa, xb), y0 = fmin(ya, yb), y1 = fmax(ya, yb);
         seg_make(child, i, s_pseg[depth + 1]);
         uint32_t h = fnv(fnv(ph, "/"), s_pseg[depth + 1]);
-        if (px >= x0 && px <= x1 && py >= y0 && py <= y1 && x1 - x0 > 1.0 && y1 - y0 > 1.0 && s_pick_n < K_PICK_MAX) {
-            pick_t *k = &s_pick[s_pick_n];
+        pick_t *k = px >= x0 && px <= x1 && py >= y0 && py <= y1 && x1 - x0 > 1.0 && y1 - y0 > 1.0 ? pick_slot() : NULL;
+        if (k) {
             size_t len = 0;
             int ok = 1;
             k->key[0] = 0;
@@ -1017,8 +1315,11 @@ static void pick_walk(void *tf, const cv_t *cv, const pk_t *p, int depth, uint32
             }
             if (ok) {
                 k->tf = child;
+                k->rend = NULL;
+                k->cam = NULL;
                 k->h = h;
                 k->depth = depth;
+                k->world = 0;
                 k->area = (x1 - x0) * (y1 - y0);
                 s_pick_n++;
             }
@@ -1039,7 +1340,9 @@ static int pick_scan(float nx, float ny) {
     double aspect = (double)sw / sh;
     void *arr = FN(K_RESOURCES_FINDALL, void *, void *, const void *)(g_scaler_type, NULL);
     uint64_t n = arr ? *(const uint64_t *)((uintptr_t)arr + F_ARRAY_LEN) : 0;
-    g_budget = K_NODE_BUDGET * 2;
+    g_budget = K_PICK_BUDGET;
+    s_unit = 1.0;
+    int unit_set = 0;
     for (uint64_t i = 0; i < n; i++) {
         void *sc = *(void *const *)((uintptr_t)arr + F_ARRAY_DATA + 8 * i);
         if (!alive(sc)) continue;
@@ -1052,10 +1355,13 @@ static int pick_scan(float nx, float ny) {
         double wc = 0.0, hc = 0.0;
         if (!canvas_geom(sc, go, (const float *)(q + F_SCALER_REFERENCE), aspect, 1, &tf, &cv, &wc, &hc)) continue;
         canvas_root(go, s_pseg[0]);
+        s_ui_root = tf;
+        if (!unit_set) { s_unit = hc / sh; unit_set = 1; }
         pk_t root = {0.0, wc, 0.0, hc, 1.0};
         pick_walk(tf, &cv, &root, 0, fnv(2166136261u, s_pseg[0]), (double)nx * wc, (1.0 - (double)ny) * hc);
     }
-    qsort(s_pick, (size_t)s_pick_n, sizeof s_pick[0], pick_cmp);
+    pick_world(nx, ny);
+    if (s_pick_n > 1) qsort(s_pick, (size_t)s_pick_n, sizeof s_pick[0], pick_cmp);
     return s_pick_n;
 }
 
@@ -1088,16 +1394,17 @@ static int sel_mode(void) {
     return o ? o->mode : OV_AUTO;
 }
 
-static void hl_make(void) {
+static void hl_make(void *parent, const float *anchors) {
     hl_clear();
-    if (!s_sel_tf || !alive(s_sel_tf)) return;
+    if (!parent || !alive(parent)) return;
     void *src = hl_source();
     if (!src) { LOG("[mod fullscreen-mode] edit: no image to build the highlight from, the selection is only logged"); return; }
-    void *img = FN(K_OBJECT_INSTANTIATE_PARENT, void *, void *, void *, const void *)(src, s_sel_tf, NULL);
+    void *img = FN(K_OBJECT_INSTANTIATE_PARENT, void *, void *, void *, const void *)(src, parent, NULL);
     if (!alive(img)) return;
     void *tf = FN(K_COMPONENT_GET_TRANSFORM, void *, void *, const void *)(img, NULL);
     if (!alive(tf)) return;
     float a[4] = {0.0f, 0.0f, 1.0f, 1.0f}, o[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    if (anchors) memcpy(a, anchors, sizeof a);
     vec3 one = {1.0f, 1.0f, 1.0f};
     FN(K_IMAGE_SET_SPRITE, void, void *, void *, const void *)(img, NULL, NULL);
     FN(K_GRAPHIC_SET_RAYCAST, void, void *, int, const void *)(img, 0, NULL);
@@ -1110,11 +1417,34 @@ static void hl_make(void) {
     s_hl_tf = tf;
 }
 
+static float s_hl_a[4];
+
+static void hl_world(void) {
+    double x0, x1, y0, y1;
+    if (!s_ui_root || !alive(s_ui_root) || !s_sel_rend || !alive(s_sel_rend) || !s_sel_cam || !alive(s_sel_cam)) { hl_clear(); return; }
+    int pw = FN(K_CAMERA_GET_PW, int, void *, const void *)(s_sel_cam, NULL), ph = FN(K_CAMERA_GET_PH, int, void *, const void *)(s_sel_cam, NULL);
+    if (pw <= 0 || ph <= 0 || !renderer_rect(s_sel_cam, s_sel_rend, &x0, &x1, &y0, &y1)) { hl_clear(); return; }
+    float a[4] = {(float)(x0 / pw), (float)(y0 / ph), (float)(x1 / pw), (float)(y1 / ph)};
+    if (s_hl_tf && alive(s_hl_tf)) {
+        if (!same4(a, s_hl_a, 1e-5f)) rt_write_anchors(s_hl_tf, a);
+    } else hl_make(s_ui_root, a);
+    memcpy(s_hl_a, a, sizeof s_hl_a);
+}
+
+static void edit_follow(void) {
+    if (!edit_enabled() || g_state != 1 || !s_sel_world || !s_sel_tf || !alive(s_sel_tf)) return;
+    hl_world();
+}
+
 static void sel_set(const pick_t *k) {
     s_sel_tf = k->tf;
+    s_sel_rend = k->rend;
+    s_sel_cam = k->cam;
+    s_sel_world = k->world;
     s_sel_h = k->h;
     snprintf(s_sel_key, sizeof s_sel_key, "%s", k->key);
-    hl_make();
+    if (k->world) hl_world();
+    else hl_make(s_sel_tf, NULL);
     const ov_t *o = ov_find(s_sel_h);
     LOG("[mod fullscreen-mode] edit: selected %d of %d \"%s\": %s, dx %.0f, dy %.0f", s_pick_i + 1, s_pick_n, s_sel_key, k_ov_name[o ? o->mode : OV_AUTO], o ? o->dx : 0.0f, o ? o->dy : 0.0f);
 }
@@ -1122,6 +1452,8 @@ static void sel_set(const pick_t *k) {
 static void sel_clear(void) {
     hl_clear();
     s_sel_tf = NULL;
+    s_sel_rend = s_sel_cam = NULL;
+    s_sel_world = 0;
     s_sel_h = 0;
     s_sel_key[0] = 0;
     s_pick_n = 0;
@@ -1270,6 +1602,8 @@ static void ui_run(uint64_t *r, int param) {
 static void frame_and_ui(uint64_t *r, int param) {
     frame_run(r, param);
     edit_run();
+    world_tick();
+    edit_follow();
     ui_run(r, param);
 }
 
