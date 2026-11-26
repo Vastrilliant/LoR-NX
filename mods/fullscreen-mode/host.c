@@ -1,5 +1,7 @@
 // Based on Bat'ko Makhno's Resolution Fix (Steam Workshop 2893583716)
 #include "dm.h"
+#include "front.h"
+#include "dm_input.h"
 #include "hle_mods_gen.h"
 #include <math.h>
 
@@ -32,6 +34,14 @@ int dm_opmode(void);
 #define K_RT_SET_OFFSET_MIN 0x19BADB0u
 #define K_RT_SET_OFFSET_MAX 0x19BB150u
 #define K_RT_GET_RECT 0x19BA1B0u
+#define K_OBJECT_INSTANTIATE_PARENT 0x19B4E90u
+#define K_IMAGE_SET_SPRITE 0x24D56D0u
+#define K_GRAPHIC_SET_COLOR 0x24DE110u
+#define K_GRAPHIC_SET_RAYCAST 0x24DE170u
+#define K_TRANSFORM_SET_LOCALSCALE 0x19BD790u
+#define K_TRANSFORM_SET_AS_LAST_SIBLING 0x19BF750u
+#define K_OBJECT_DESTROY 0x19B5310u
+#define K_TIME_FRAMECOUNT 0x19B9380u
 #define K_RT_GET_PIVOT 0x19BA900u
 #define K_TRANSFORM_GET_LOSSY_SCALE 0x19BFA20u
 #define F_ARRAY_LEN 0x18
@@ -72,13 +82,32 @@ int dm_opmode(void);
 #define K_SCALE_MIN 0.05
 #define K_APPLY_EPS 0.5
 #define K_DESIGN_ASPECT (16.0 / 9.0)
+#define K_OV_MAX 512
+#define K_TAB 4096
+#define K_KEY_MAX 320
+#define K_SEG_MAX 48
+#define K_PICK_MAX 48
+#define K_PICK_DEPTH 24
+#define K_SAME_SPOT 0.012f
+#define K_HL_ALPHA 0.4f
+#define K_LAYOUT_FILE "fullscreen_layout.txt"
 
 typedef struct { float x, y; } vec2;
 typedef struct { float x, y, z; } vec3;
 typedef struct { float x, y, w, h; } rect4;
-typedef struct { void *obj; float oa[4], oo[4], aa[4], ao[4], sh; uint8_t seen, logged, vlog, keep, kind, act; } rec_t;
+typedef struct { void *obj; float oa[4], oo[4], aa[4], ao[4], sh; uint32_t kh; uint8_t seen, logged, vlog, keep, kind, act; } rec_t;
 typedef struct { int ax; double size, design, osize, cscale; } cv_t;
-typedef struct { double des0, dsz, act0, asz, kp, v0, vsz; int grp; } par_t;
+typedef struct { double des0, dsz, act0, asz, kp, v0, vsz; int grp, through; } par_t;
+typedef struct { float r, g, b, a; } rgba;
+typedef struct { double x0, xs, y0, ys, kp; } pk_t;
+typedef struct { uint32_t h; uint8_t mode; float dx, dy; char key[K_KEY_MAX]; } ov_t;
+typedef struct { uint32_t h; int16_t ov; uint8_t anc; } slot_t;
+typedef struct { void *tf; uint32_t h; int depth; double area; char key[K_KEY_MAX]; } pick_t;
+
+enum { OV_AUTO, OV_LEFT, OV_CENTER, OV_RIGHT, OV_STRETCH, OV_EXPAND, OV_COUNT };
+
+static const char *const k_ov_name[OV_COUNT] = {"auto", "left", "center", "right", "stretch", "expand"};
+static const rgba k_ov_color[OV_COUNT] = {{1.0f, 1.0f, 1.0f, K_HL_ALPHA}, {0.2f, 0.5f, 1.0f, K_HL_ALPHA}, {0.2f, 1.0f, 0.4f, K_HL_ALPHA}, {1.0f, 0.6f, 0.1f, K_HL_ALPHA}, {1.0f, 0.2f, 0.9f, K_HL_ALPHA}, {1.0f, 0.15f, 0.15f, K_HL_ALPHA}};
 
 enum { ACT_SKIP, ACT_LEFT, ACT_RIGHT, ACT_CENTER, ACT_STRETCH, ACT_COVER, ACT_THRU, ACT_SCALED, ACT_COUNT };
 
@@ -91,6 +120,15 @@ static void *s_noted[K_NOTE_CAP];
 static void *g_scaler_type, *g_layout_type, *g_scroll_type, *s_rt_klass;
 static rec_t s_rec[K_REC_CAP];
 static int s_rec_n, g_budget, g_changed, g_act[ACT_COUNT];
+static ov_t s_ov[K_OV_MAX];
+static slot_t s_tab[K_TAB];
+static int s_ov_n, s_paths, s_idx, s_edit = -1, s_select, s_loaded, s_pick_n, s_pick_i, s_hold[4];
+static uint32_t s_par_h[K_MAX_DEPTH + 4], s_sel_h;
+static char s_pseg[K_PICK_DEPTH + 2][K_SEG_MAX], s_sel_key[K_KEY_MAX];
+static pick_t s_pick[K_PICK_MAX];
+static void *s_sel_tf, *s_hl_img, *s_hl_tf, *s_hl_src, *g_image_type;
+static float s_last_nx = -1.0f, s_last_ny = -1.0f;
+static uint64_t s_prev_keys;
 
 static uint8_t *main_base(void) {
     if (!s_main)
@@ -129,6 +167,7 @@ static int resolve_types(void) {
         if (!g_scaler_type) g_scaler_type = find_type("UnityEngine.UI.CanvasScaler, UnityEngine.UI");
         if (!g_layout_type) g_layout_type = find_type("UnityEngine.UI.LayoutGroup, UnityEngine.UI");
         if (!g_scroll_type) g_scroll_type = find_type("UnityEngine.UI.ScrollRect, UnityEngine.UI");
+        if (!g_image_type) g_image_type = find_type("UnityEngine.UI.Image, UnityEngine.UI");
         LOG("[mod fullscreen-mode] types: CanvasScaler %p, LayoutGroup %p, ScrollRect %p", g_scaler_type, g_layout_type, g_scroll_type);
     }
     return g_scaler_type != NULL;
@@ -311,6 +350,177 @@ static void *child_at(void *tf, int i) {
     return alive(child) && *(void *const *)child == s_rt_klass ? child : NULL;
 }
 
+static uint32_t fnv(uint32_t h, const char *str) {
+    while (*str) { h ^= (uint8_t)*str++; h *= 16777619u; }
+    return h ? h : 1u;
+}
+
+static slot_t *slot_get(uint32_t h, int make) {
+    for (uint32_t i = 0; i < K_TAB; i++) {
+        slot_t *sl = &s_tab[(h + i) & (K_TAB - 1)];
+        if (sl->h == h) return sl;
+        if (!sl->h) {
+            if (!make) return NULL;
+            sl->h = h;
+            sl->ov = -1;
+            return sl;
+        }
+    }
+    return NULL;
+}
+
+static void seg_clean(char *str) {
+    for (; *str; str++)
+        if (*str == '/' || *str == '|' || *str == ' ' || *str == '[' || *str == ']' || *str == '\t' || *str == '\n' || *str == '\r') *str = '_';
+}
+
+static void seg_make(void *tf, int idx, char *out) {
+    char name[K_SEG_MAX - 8];
+    ascii_name(tf, name, sizeof name);
+    seg_clean(name);
+    snprintf(out, K_SEG_MAX, "%s[%d]", name, idx);
+}
+
+static void canvas_root(void *go, char *out) {
+    char name[K_SEG_MAX - 4];
+    ascii_name(go, name, sizeof name);
+    seg_clean(name);
+    snprintf(out, K_SEG_MAX, "c:%s", name);
+}
+
+static uint32_t key_hash(const char *key, int register_ancestors) {
+    char buf[K_KEY_MAX];
+    snprintf(buf, sizeof buf, "%s", key);
+    char *save = NULL, *tok = strtok_r(buf, "/", &save);
+    uint32_t h = 0;
+    int first = 1;
+    while (tok) {
+        h = first ? fnv(2166136261u, tok) : fnv(fnv(h, "/"), tok);
+        first = 0;
+        tok = strtok_r(NULL, "/", &save);
+        if (tok && register_ancestors) {
+            slot_t *sl = slot_get(h, 1);
+            if (sl) sl->anc = 1;
+        }
+    }
+    return h;
+}
+
+static int mode_parse(const char *name) {
+    for (int i = 0; i < OV_COUNT; i++)
+        if (!strncmp(name, k_ov_name[i], strlen(k_ov_name[i]))) return i;
+    return -1;
+}
+
+static ov_t *ov_find(uint32_t h) {
+    slot_t *sl = slot_get(h, 0);
+    return sl && sl->ov >= 0 ? &s_ov[sl->ov] : NULL;
+}
+
+static ov_t *ov_make(const char *key) {
+    uint32_t h = key_hash(key, 1);
+    if (!h) return NULL;
+    ov_t *o = ov_find(h);
+    if (o) return o;
+    slot_t *sl = slot_get(h, 1);
+    if (!sl) return NULL;
+    int idx = -1;
+    for (int i = 0; i < s_ov_n; i++)
+        if (!s_ov[i].key[0]) { idx = i; break; }
+    if (idx < 0) {
+        if (s_ov_n >= K_OV_MAX) return NULL;
+        idx = s_ov_n++;
+    }
+    o = &s_ov[idx];
+    memset(o, 0, sizeof *o);
+    o->h = h;
+    snprintf(o->key, sizeof o->key, "%s", key);
+    sl->ov = (int16_t)idx;
+    s_paths = 1;
+    return o;
+}
+
+static void ov_drop(ov_t *o) {
+    slot_t *sl = slot_get(o->h, 0);
+    if (sl) sl->ov = -1;
+    memset(o, 0, sizeof *o);
+}
+
+static const char *layout_path(void) {
+    const char *v = getenv("DM_MOD_FULLSCREEN_LAYOUT");
+    return v && v[0] ? v : K_LAYOUT_FILE;
+}
+
+static void layout_load(void) {
+    FILE *f = fopen(layout_path(), "r");
+    if (!f) { LOG("[mod fullscreen-mode] layout: no file %s, nothing to load", layout_path()); return; }
+    char line[K_KEY_MAX + 64];
+    int n = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        char *save = NULL, *key = strtok_r(line, "|", &save), *mode = strtok_r(NULL, "|", &save), *dx = strtok_r(NULL, "|", &save), *dy = strtok_r(NULL, "|\r\n", &save);
+        int m = mode ? mode_parse(mode) : -1;
+        if (!key || m < 0) continue;
+        ov_t *o = ov_make(key);
+        if (!o) continue;
+        o->mode = (uint8_t)m;
+        o->dx = dx ? strtof(dx, NULL) : 0.0f;
+        o->dy = dy ? strtof(dy, NULL) : 0.0f;
+        n++;
+    }
+    fclose(f);
+    LOG("[mod fullscreen-mode] layout: %d placements loaded from %s", n, layout_path());
+}
+
+static void layout_save(void) {
+    FILE *f = fopen(layout_path(), "w");
+    if (!f) { LOG("[mod fullscreen-mode] layout: cannot write %s", layout_path()); return; }
+    fprintf(f, "# fullscreen-mode layout, one placement per line: canvas path|mode|dx|dy (design units, dy up)\n");
+    int n = 0;
+    for (int i = 0; i < s_ov_n; i++) {
+        const ov_t *o = &s_ov[i];
+        if (!o->key[0]) continue;
+        fprintf(f, "%s|%s|%.1f|%.1f\n", o->key, k_ov_name[o->mode], o->dx, o->dy);
+        n++;
+    }
+    fclose(f);
+    LOG("[mod fullscreen-mode] layout: %d placements saved to %s", n, layout_path());
+}
+
+static int ov_apply(int mode, double d0, double d1, const cv_t *cv, double *t0, double *t1) {
+    double wc = cv->size, dw = cv->design, pad = (wc - dw) / 2.0, mid = dw / 2.0;
+    switch (mode) {
+    case OV_LEFT: *t0 = d0; *t1 = d1; return ACT_LEFT;
+    case OV_CENTER: *t0 = d0 + pad; *t1 = d1 + pad; return ACT_CENTER;
+    case OV_RIGHT: *t0 = d0 + 2.0 * pad; *t1 = d1 + 2.0 * pad; return ACT_RIGHT;
+    case OV_STRETCH:
+        *t0 = d0;
+        *t1 = wc - (dw - d1);
+        if (*t1 < *t0) *t1 = *t0;
+        return ACT_STRETCH;
+    case OV_EXPAND: {
+        double f = wc / dw;
+        *t0 = wc / 2.0 + (d0 - mid) * f;
+        *t1 = wc / 2.0 + (d1 - mid) * f;
+        return ACT_COVER;
+    }
+    }
+    return ACT_SKIP;
+}
+
+static void child_par(par_t *np, const cv_t *cv, const par_t *pp, const rec_t *r, const float *ca, const float *co, double d0, double lo, double hi, double a0, double v0, double kpn) {
+    int ax = cv->ax, ay = 1 - ax;
+    np->des0 = d0;
+    np->dsz = hi - lo;
+    np->act0 = a0;
+    np->asz = ((double)ca[2 + ax] - ca[ax]) * pp->asz + ((double)co[2 + ax] - co[ax]);
+    np->kp = kpn;
+    np->v0 = v0;
+    np->vsz = ((double)r->oa[2 + ay] - r->oa[ay]) * pp->vsz + ((double)r->oo[2 + ay] - r->oo[ay]);
+    np->grp = 0;
+    np->through = 0;
+}
+
 static int place_axis(void *tf, int ax, double org, double psz, double kp, double t0, double t1, double *o0, double *o1) {
     float ca[4], co[4];
     rt_read(tf, ca, co);
@@ -382,7 +592,7 @@ static int settle_container(void *tf, rec_t *r, const cv_t *cv, double d0, doubl
         return r->act;
     }
     if (nchild <= 0 || d1 - d0 > K_POINT_FRAC * cv->design || opaque(tf)) return act;
-    par_t dp = {d0, dsz, 0.0, 0.0, kp, 0.0, 0.0};
+    par_t dp = {d0, dsz, 0.0, 0.0, kp, 0.0, 0.0, 0, 0};
     double u0, u1, sh = *t0 - d0;
     if (children_union(tf, cv, &dp, &u0, &u1)) {
         double e0 = fmin(d0, u0), e1 = fmax(d1, u1), x0 = 0.0, x1 = 0.0;
@@ -424,10 +634,34 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
         return;
     }
     rec_sync(r, ca, co);
+    ov_t *ov = NULL;
+    int anc = 0;
+    if (s_paths) {
+        if (!r->kh) {
+            char seg[K_SEG_MAX];
+            seg_make(tf, s_idx, seg);
+            r->kh = fnv(fnv(s_par_h[depth], "/"), seg);
+        }
+        s_par_h[depth + 1] = r->kh;
+        slot_t *sl = slot_get(r->kh, 0);
+        if (sl) { ov = sl->ov >= 0 ? &s_ov[sl->ov] : NULL; anc = sl->anc; }
+    }
     double c0 = r->oa[ax] * pp->dsz + r->oo[ax];
     double c1 = r->oa[2 + ax] * pp->dsz + r->oo[2 + ax];
     double lo = fmin(c0, c1), hi = fmax(c0, c1);
     double d0 = pp->des0 + lo * pp->kp, d1 = pp->des0 + hi * pp->kp;
+    if (pp->through && !ov) {
+        if (anc && depth < K_MAX_DEPTH) {
+            int ty = 1 - ax;
+            double tu0 = r->oa[ty] * pp->vsz + r->oo[ty], tu1 = r->oa[2 + ty] * pp->vsz + r->oo[2 + ty];
+            double ta0 = pp->act0 + (ca[ax] * pp->asz + co[ax]) * pp->kp;
+            par_t tp;
+            child_par(&tp, cv, pp, r, ca, co, d0, lo, hi, ta0, pp->v0 + fmin(tu0, tu1) * pp->kp, kpn);
+            tp.through = 1;
+            process_children(tf, cv, &tp, depth + 1);
+        }
+        return;
+    }
     if (fabs(srel) < K_SCALE_MIN) { g_act[ACT_SCALED]++; return; }
     int fell = 0;
     if (fabs(srel - 1.0) > 0.01) {
@@ -483,10 +717,13 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
         t1 = d1 + gp;
         act = ACT_CENTER;
     }
-    if (act == ACT_LEFT || act == ACT_RIGHT || act == ACT_CENTER) {
+    int forced = ov && ov->mode != OV_AUTO;
+    if (forced) act = ov_apply(ov->mode, d0, d1, cv, &t0, &t1);
+    if (!forced && (act == ACT_LEFT || act == ACT_RIGHT || act == ACT_CENTER)) {
         if (nchild < 0) nchild = child_count(tf);
         act = settle_container(tf, r, cv, d0, d1, hi - lo, kpn, nchild, act, &t0, &t1);
     }
+    if (ov && act != ACT_SKIP && act != ACT_THRU) { t0 += ov->dx; t1 += ov->dx; }
     g_act[act]++;
     double a0 = pp->act0 + (ca[ax] * pp->asz + co[ax]) * pp->kp;
     double a1 = pp->act0 + (ca[2 + ax] * pp->asz + co[2 + ax]) * pp->kp;
@@ -504,9 +741,12 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
     int changed = 0;
     if (act != ACT_THRU) {
         changed = place_axis(tf, ax, pp->act0, pp->asz, pp->kp, t0, t1, &a0, &a1);
+        double dy = ov ? ov->dy : 0.0, b0, b1;
         if (act == ACT_COVER) {
-            double f = cv->size / cv->design, mid = cv->osize / 2.0, b0, b1;
-            changed |= place_axis(tf, ay, pp->v0, pp->vsz, pp->kp, mid + (v0 - mid) * f, mid + (v1 - mid) * f, &b0, &b1);
+            double f = cv->size / cv->design, mid = cv->osize / 2.0;
+            changed |= place_axis(tf, ay, pp->v0, pp->vsz, pp->kp, mid + (v0 - mid) * f + dy, mid + (v1 - mid) * f + dy, &b0, &b1);
+        } else if (ov) {
+            changed |= place_axis(tf, ay, pp->v0, pp->vsz, pp->kp, v0 + dy, v1 + dy, &b0, &b1);
         }
         if (changed) {
             rt_read(tf, ca, co);
@@ -529,16 +769,12 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
         g_log_lines++;
         LOG("[mod fullscreen-mode]   %*s\"%s\" %s: design %.0f..%.0f x %.0f..%.0f, now %.0f..%.0f", depth * 2, "", name, k_act_name[act], d0, d1, v0, v1, a0, a1);
     }
-    if (!(act == ACT_STRETCH || act == ACT_THRU) || depth >= K_MAX_DEPTH || opaque(tf)) return;
+    int deep = act == ACT_STRETCH || act == ACT_THRU;
+    int block = !deep || opaque(tf);
+    if (depth >= K_MAX_DEPTH || (block && !anc)) return;
     par_t np;
-    np.des0 = d0;
-    np.dsz = hi - lo;
-    np.act0 = a0;
-    np.asz = ((double)ca[2 + ax] - ca[ax]) * pp->asz + ((double)co[2 + ax] - co[ax]);
-    np.kp = kpn;
-    np.v0 = v0;
-    np.vsz = ((double)r->oa[2 + ay] - r->oa[ay]) * pp->vsz + ((double)r->oo[2 + ay] - r->oo[ay]);
-    np.grp = 0;
+    child_par(&np, cv, pp, r, ca, co, d0, lo, hi, a0, v0, kpn);
+    np.through = block;
     process_children(tf, cv, &np, depth + 1);
 }
 
@@ -583,16 +819,17 @@ static int group_centred(void *tf, const cv_t *cv, const par_t *pp, int n) {
 static void process_children(void *tf, const cv_t *cv, const par_t *pp0, int depth) {
     int n = child_count(tf), bleed = 0;
     par_t lp = *pp0;
-    lp.grp = group_centred(tf, cv, pp0, n);
+    lp.grp = pp0->through ? 0 : group_centred(tf, cv, pp0, n);
     const par_t *pp = &lp;
     for (int i = 0; i < n && g_budget > 0; i++) {
         void *child = child_at(tf, i);
-        if (!child || (g_skip_inactive && !active_node(child))) continue;
+        if (!child || child == s_hl_tf || (g_skip_inactive && !active_node(child))) continue;
+        s_idx = i;
         process_node(child, cv, pp, depth, &bleed);
     }
 }
 
-static int layout_canvas(void *sc, void *go, const float *ref, double aspect) {
+static int canvas_geom(void *sc, void *go, const float *ref, double aspect, int quiet, void **tfp, cv_t *cv, double *wcp, double *hcp) {
     void *tf = FN(K_COMPONENT_GET_TRANSFORM, void *, void *, const void *)(sc, NULL);
     if (!alive(tf)) return 0;
     if (!s_rt_klass) s_rt_klass = *(void *const *)tf;
@@ -602,7 +839,7 @@ static int layout_canvas(void *sc, void *go, const float *ref, double aspect) {
     double wc = rc.w, hc = rc.h;
     if (wc < 1.0 || hc < 1.0) return 0;
     if (fabs(wc / hc - aspect) > aspect * 0.02) {
-        if (first_note(sc) && log_ok()) {
+        if (!quiet && first_note(sc) && log_ok()) {
             char name[48];
             ascii_name(go, name, sizeof name);
             g_log_lines++;
@@ -610,13 +847,28 @@ static int layout_canvas(void *sc, void *go, const float *ref, double aspect) {
         }
         return 0;
     }
-    cv_t cv;
-    if (wc > ref[0] + 1.0) { cv.ax = 0; cv.size = wc; cv.design = ref[0]; cv.osize = hc; }
-    else if (hc > ref[1] + 1.0) { cv.ax = 1; cv.size = hc; cv.design = ref[1]; cv.osize = wc; }
+    if (wc > ref[0] + 1.0) { cv->ax = 0; cv->size = wc; cv->design = ref[0]; cv->osize = hc; }
+    else if (hc > ref[1] + 1.0) { cv->ax = 1; cv->size = hc; cv->design = ref[1]; cv->osize = wc; }
     else return 0;
-    cv.cscale = lossy_scale(tf, cv.ax);
-    if (cv.cscale < 1e-6) return 0;
-    par_t pp = {0.0, cv.design, 0.0, cv.size, 1.0, 0.0, cv.osize};
+    cv->cscale = lossy_scale(tf, cv->ax);
+    if (cv->cscale < 1e-6) return 0;
+    *tfp = tf;
+    *wcp = wc;
+    *hcp = hc;
+    return 1;
+}
+
+static int layout_canvas(void *sc, void *go, const float *ref, double aspect) {
+    void *tf = NULL;
+    cv_t cv;
+    double wc = 0.0, hc = 0.0;
+    if (!canvas_geom(sc, go, ref, aspect, 0, &tf, &cv, &wc, &hc)) return 0;
+    par_t pp = {0.0, cv.design, 0.0, cv.size, 1.0, 0.0, cv.osize, 0, 0};
+    if (s_paths) {
+        char root[K_SEG_MAX];
+        canvas_root(go, root);
+        s_par_h[0] = fnv(2166136261u, root);
+    }
     int before = g_changed;
     process_children(tf, &cv, &pp, 0);
     if (g_changed != before && log_ok()) {
@@ -691,12 +943,274 @@ static void sweep_ui(void) {
         LOG("[mod fullscreen-mode] frame %d: %d of %d canvas scalers set to match, %d canvases laid out (screen %dx%d): %d elements adjusted of %d seen (%d left, %d right, %d centred, %d stretched, %d expanded, %d containers passed, %d left alone)", g_frame, matched, scalers, laid, sw, sh, g_changed, g_act[ACT_LEFT] + g_act[ACT_RIGHT] + g_act[ACT_CENTER] + g_act[ACT_STRETCH] + g_act[ACT_COVER] + g_act[ACT_THRU] + g_act[ACT_SKIP] + g_act[ACT_SCALED], g_act[ACT_LEFT], g_act[ACT_RIGHT], g_act[ACT_CENTER], g_act[ACT_STRETCH], g_act[ACT_COVER], g_act[ACT_THRU], g_act[ACT_SKIP] + g_act[ACT_SCALED]);
 }
 
+static int edit_enabled(void) {
+    if (s_edit < 0) {
+        const char *v = getenv("DM_MOD_FULLSCREEN_EDIT");
+        s_edit = v && v[0] == '1';
+        if (s_edit) s_paths = 1;
+        LOG("[mod fullscreen-mode] layout editor %s (DM_MOD_FULLSCREEN_EDIT=%s): the special button toggles select mode, tap an element to select it, tap the same spot or ZL / ZR to step through the elements under it, L / R change its placement (auto, left, centre, right, stretch, expand), the D-pad nudges it, Y resets it, B deselects, X saves %s", s_edit ? "on" : "off", v ? v : "unset", layout_path());
+    }
+    return s_edit;
+}
+
+static int pick_cmp(const void *a, const void *b) {
+    const pick_t *x = a, *y = b;
+    if (x->area < y->area) return -1;
+    if (x->area > y->area) return 1;
+    return y->depth - x->depth;
+}
+
+static void pick_walk(void *tf, const cv_t *cv, const pk_t *p, int depth, uint32_t ph, double px, double py) {
+    if (depth >= K_PICK_DEPTH) return;
+    int n = child_count(tf);
+    for (int i = 0; i < n && g_budget > 0; i++) {
+        void *child = child_at(tf, i);
+        if (!child || child == s_hl_tf || !active_node(child)) continue;
+        g_budget--;
+        float ca[4], co[4];
+        rt_read(child, ca, co);
+        double xa = p->x0 + (ca[0] * p->xs + co[0]) * p->kp, xb = p->x0 + (ca[2] * p->xs + co[2]) * p->kp;
+        double ya = p->y0 + (ca[1] * p->ys + co[1]) * p->kp, yb = p->y0 + (ca[3] * p->ys + co[3]) * p->kp;
+        double x0 = fmin(xa, xb), x1 = fmax(xa, xb), y0 = fmin(ya, yb), y1 = fmax(ya, yb);
+        seg_make(child, i, s_pseg[depth + 1]);
+        uint32_t h = fnv(fnv(ph, "/"), s_pseg[depth + 1]);
+        if (px >= x0 && px <= x1 && py >= y0 && py <= y1 && x1 - x0 > 1.0 && y1 - y0 > 1.0 && s_pick_n < K_PICK_MAX) {
+            pick_t *k = &s_pick[s_pick_n];
+            size_t len = 0;
+            int ok = 1;
+            k->key[0] = 0;
+            for (int d = 0; d <= depth + 1 && ok; d++) {
+                int w = snprintf(k->key + len, sizeof k->key - len, d ? "/%s" : "%s", s_pseg[d]);
+                if (w < 0 || len + (size_t)w >= sizeof k->key) ok = 0;
+                else len += (size_t)w;
+            }
+            if (ok) {
+                k->tf = child;
+                k->h = h;
+                k->depth = depth;
+                k->area = (x1 - x0) * (y1 - y0);
+                s_pick_n++;
+            }
+        }
+        pk_t np = {xa < xb ? xa : xb, ((double)ca[2] - ca[0]) * p->xs + ((double)co[2] - co[0]), ya < yb ? ya : yb, ((double)ca[3] - ca[1]) * p->ys + ((double)co[3] - co[1]), 1.0};
+        double sc = lossy_scale(child, cv->ax);
+        np.kp = cv->cscale > 1e-6 && sc > 1e-6 ? sc / cv->cscale : 1.0;
+        if (ca[0] > ca[2] || ca[1] > ca[3]) { np.x0 = xa; np.y0 = ya; }
+        pick_walk(child, cv, &np, depth + 1, h, px, py);
+    }
+}
+
+static int pick_scan(float nx, float ny) {
+    s_pick_n = 0;
+    if (!resolve_types()) return 0;
+    int sw = FN(K_SCREEN_GET_WIDTH, int, const void *)(NULL), sh = FN(K_SCREEN_GET_HEIGHT, int, const void *)(NULL);
+    if (sw <= 0 || sh <= 0) return 0;
+    double aspect = (double)sw / sh;
+    void *arr = FN(K_RESOURCES_FINDALL, void *, void *, const void *)(g_scaler_type, NULL);
+    uint64_t n = arr ? *(const uint64_t *)((uintptr_t)arr + F_ARRAY_LEN) : 0;
+    g_budget = K_NODE_BUDGET * 2;
+    for (uint64_t i = 0; i < n; i++) {
+        void *sc = *(void *const *)((uintptr_t)arr + F_ARRAY_DATA + 8 * i);
+        if (!alive(sc)) continue;
+        void *go = FN(K_COMPONENT_GET_GAMEOBJECT, void *, void *, const void *)(sc, NULL);
+        if (!alive(go) || !(FN(K_GO_ACTIVE_IN_HIERARCHY, uint8_t, void *, const void *)(go, NULL) & 1)) continue;
+        uint8_t *q = (uint8_t *)sc;
+        if (*(int *)(q + F_SCALER_MODE) != SCALE_WITH_SCREEN_SIZE) continue;
+        void *tf = NULL;
+        cv_t cv;
+        double wc = 0.0, hc = 0.0;
+        if (!canvas_geom(sc, go, (const float *)(q + F_SCALER_REFERENCE), aspect, 1, &tf, &cv, &wc, &hc)) continue;
+        canvas_root(go, s_pseg[0]);
+        pk_t root = {0.0, wc, 0.0, hc, 1.0};
+        pick_walk(tf, &cv, &root, 0, fnv(2166136261u, s_pseg[0]), (double)nx * wc, (1.0 - (double)ny) * hc);
+    }
+    qsort(s_pick, (size_t)s_pick_n, sizeof s_pick[0], pick_cmp);
+    return s_pick_n;
+}
+
+static void hl_clear(void) {
+    if (s_hl_img && alive(s_hl_img)) {
+        void *go = FN(K_COMPONENT_GET_GAMEOBJECT, void *, void *, const void *)(s_hl_img, NULL);
+        if (alive(go)) FN(K_OBJECT_DESTROY, void, void *, const void *)(go, NULL);
+    }
+    s_hl_img = s_hl_tf = NULL;
+}
+
+static void *hl_source(void) {
+    if (s_hl_src && alive(s_hl_src)) return s_hl_src;
+    s_hl_src = NULL;
+    if (!g_image_type) return NULL;
+    void *arr = FN(K_RESOURCES_FINDALL, void *, void *, const void *)(g_image_type, NULL);
+    uint64_t n = arr ? *(const uint64_t *)((uintptr_t)arr + F_ARRAY_LEN) : 0;
+    for (uint64_t i = 0; i < n && !s_hl_src; i++) {
+        void *img = *(void *const *)((uintptr_t)arr + F_ARRAY_DATA + 8 * i);
+        if (!alive(img)) continue;
+        void *tf = FN(K_COMPONENT_GET_TRANSFORM, void *, void *, const void *)(img, NULL);
+        if (!alive(tf) || *(void *const *)tf != s_rt_klass || !active_node(tf) || child_count(tf) != 0) continue;
+        s_hl_src = img;
+    }
+    return s_hl_src;
+}
+
+static int sel_mode(void) {
+    const ov_t *o = ov_find(s_sel_h);
+    return o ? o->mode : OV_AUTO;
+}
+
+static void hl_make(void) {
+    hl_clear();
+    if (!s_sel_tf || !alive(s_sel_tf)) return;
+    void *src = hl_source();
+    if (!src) { LOG("[mod fullscreen-mode] edit: no image to build the highlight from, the selection is only logged"); return; }
+    void *img = FN(K_OBJECT_INSTANTIATE_PARENT, void *, void *, void *, const void *)(src, s_sel_tf, NULL);
+    if (!alive(img)) return;
+    void *tf = FN(K_COMPONENT_GET_TRANSFORM, void *, void *, const void *)(img, NULL);
+    if (!alive(tf)) return;
+    float a[4] = {0.0f, 0.0f, 1.0f, 1.0f}, o[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    vec3 one = {1.0f, 1.0f, 1.0f};
+    FN(K_IMAGE_SET_SPRITE, void, void *, void *, const void *)(img, NULL, NULL);
+    FN(K_GRAPHIC_SET_RAYCAST, void, void *, int, const void *)(img, 0, NULL);
+    FN(K_GRAPHIC_SET_COLOR, void, void *, rgba, const void *)(img, k_ov_color[sel_mode()], NULL);
+    rt_write_anchors(tf, a);
+    rt_write_offsets(tf, o);
+    FN(K_TRANSFORM_SET_LOCALSCALE, void, void *, vec3, const void *)(tf, one, NULL);
+    FN(K_TRANSFORM_SET_AS_LAST_SIBLING, void, void *, const void *)(tf, NULL);
+    s_hl_img = img;
+    s_hl_tf = tf;
+}
+
+static void sel_set(const pick_t *k) {
+    s_sel_tf = k->tf;
+    s_sel_h = k->h;
+    snprintf(s_sel_key, sizeof s_sel_key, "%s", k->key);
+    hl_make();
+    const ov_t *o = ov_find(s_sel_h);
+    LOG("[mod fullscreen-mode] edit: selected %d of %d \"%s\": %s, dx %.0f, dy %.0f", s_pick_i + 1, s_pick_n, s_sel_key, k_ov_name[o ? o->mode : OV_AUTO], o ? o->dx : 0.0f, o ? o->dy : 0.0f);
+}
+
+static void sel_clear(void) {
+    hl_clear();
+    s_sel_tf = NULL;
+    s_sel_h = 0;
+    s_sel_key[0] = 0;
+    s_pick_n = 0;
+}
+
+static void edit_changed(const ov_t *o) {
+    if (o) {
+        if (s_hl_img && alive(s_hl_img)) FN(K_GRAPHIC_SET_COLOR, void, void *, rgba, const void *)(s_hl_img, k_ov_color[o->mode], NULL);
+        LOG("[mod fullscreen-mode] edit: \"%s\" %s, dx %.0f, dy %.0f", s_sel_key, k_ov_name[o->mode], o->dx, o->dy);
+    }
+    g_next_ui = g_frame;
+}
+
+static ov_t *sel_ov(void) {
+    ov_t *o = ov_find(s_sel_h);
+    return o ? o : ov_make(s_sel_key);
+}
+
+static void sel_tidy(ov_t *o) {
+    if (o && o->mode == OV_AUTO && o->dx == 0.0f && o->dy == 0.0f) {
+        ov_drop(o);
+        edit_changed(NULL);
+        if (s_hl_img && alive(s_hl_img)) FN(K_GRAPHIC_SET_COLOR, void, void *, rgba, const void *)(s_hl_img, k_ov_color[OV_AUTO], NULL);
+        LOG("[mod fullscreen-mode] edit: \"%s\" back to auto", s_sel_key);
+    }
+}
+
+static void edit_tap(float nx, float ny) {
+    int n = pick_scan(nx, ny);
+    if (n <= 0) {
+        LOG("[mod fullscreen-mode] edit: nothing found at %.3f, %.3f", nx, ny);
+        sel_clear();
+        s_last_nx = -1.0f;
+        return;
+    }
+    int idx = 0;
+    int same = s_sel_h && hypotf(nx - s_last_nx, ny - s_last_ny) < K_SAME_SPOT;
+    if (same)
+        for (int i = 0; i < n; i++)
+            if (s_pick[i].h == s_sel_h) { idx = (i + 1) % n; break; }
+    s_last_nx = nx;
+    s_last_ny = ny;
+    s_pick_i = idx;
+    sel_set(&s_pick[idx]);
+}
+
+static void edit_step(int dir) {
+    if (s_pick_n <= 0) return;
+    s_pick_i = (s_pick_i + s_pick_n + dir) % s_pick_n;
+    sel_set(&s_pick[s_pick_i]);
+}
+
+static void edit_nudge(uint64_t keys) {
+    static const uint64_t bits[4] = {DM_BTN_LEFT, DM_BTN_RIGHT, DM_BTN_UP, DM_BTN_DOWN};
+    float d[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    int fire = 0;
+    for (int i = 0; i < 4; i++) {
+        s_hold[i] = (keys & bits[i]) ? s_hold[i] + 1 : 0;
+        int h = s_hold[i];
+        if (h == 1 || (h > 20 && h % 2 == 0)) {
+            d[i] = h > 90 ? 8.0f : h > 45 ? 4.0f : 1.0f;
+            fire = 1;
+        }
+    }
+    if (!fire) return;
+    ov_t *o = sel_ov();
+    if (!o) return;
+    o->dx += d[1] - d[0];
+    o->dy += d[2] - d[3];
+    if (o->dx == 0.0f && o->dy == 0.0f && o->mode == OV_AUTO) { sel_tidy(o); return; }
+    edit_changed(o);
+}
+
+static void edit_run(void) {
+    if (!edit_enabled() || g_state != 1 || !g_applied) return;
+    int frame = FN(K_TIME_FRAMECOUNT, int, const void *)(NULL);
+    uint64_t keys = dm_mod_keys(), down = keys & ~s_prev_keys;
+    s_prev_keys = keys;
+    dm_mouse_frame_t mf;
+    dm_mouse_frame((uint64_t)frame, &mf);
+    if (down & dm_mod_special()) {
+        s_select = !s_select;
+        if (!s_select) sel_clear();
+        LOG("[mod fullscreen-mode] edit: select mode %s", s_select ? "on" : "off");
+        return;
+    }
+    if (!s_select) return;
+    dm_mod_input_mask(DM_BTN_LEFT | DM_BTN_RIGHT | DM_BTN_UP | DM_BTN_DOWN | DM_BTN_X | DM_BTN_Y | DM_BTN_B | DM_BTN_L | DM_BTN_R | DM_BTN_ZL | DM_BTN_ZR, 120);
+    if (s_hl_img && !alive(s_hl_img)) hl_clear();
+    if (s_sel_tf && !alive(s_sel_tf)) sel_clear();
+    if (mf.down & DM_MOUSE_LEFT) { edit_tap(mf.nx, mf.ny); return; }
+    if (down & DM_BTN_X) { layout_save(); return; }
+    if (!s_sel_tf) return;
+    if (down & DM_BTN_B) { sel_clear(); return; }
+    if (down & DM_BTN_ZL) { edit_step(-1); return; }
+    if (down & DM_BTN_ZR) { edit_step(1); return; }
+    if (down & (DM_BTN_L | DM_BTN_R)) {
+        ov_t *o = sel_ov();
+        if (!o) return;
+        o->mode = (uint8_t)((o->mode + OV_COUNT + ((down & DM_BTN_R) ? 1 : -1)) % OV_COUNT);
+        if (o->mode == OV_AUTO && o->dx == 0.0f && o->dy == 0.0f) sel_tidy(o);
+        else edit_changed(o);
+        return;
+    }
+    if (down & DM_BTN_Y) {
+        ov_t *o = ov_find(s_sel_h);
+        if (o) { o->mode = OV_AUTO; o->dx = o->dy = 0.0f; sel_tidy(o); }
+        return;
+    }
+    edit_nudge(keys);
+}
+
 static void frame_run(uint64_t *r, int param) {
     (void)r; (void)param;
     if (g_state < 0 || !main_base()) return;
     if (g_state == 0) {
         if (strncmp(dm_main_build(), K_BUILD_ID, 32) != 0) { g_state = -1; LOG("[mod fullscreen-mode] wrong build, mod stays out"); return; }
         g_state = 1;
+        edit_enabled();
+        if (!s_loaded) { s_loaded = 1; layout_load(); }
     }
     if (++g_frame < g_next_check) return;
     g_next_check = g_frame + K_RECHECK_FRAMES;
@@ -727,6 +1241,7 @@ static void ui_run(uint64_t *r, int param) {
 
 static void frame_and_ui(uint64_t *r, int param) {
     frame_run(r, param);
+    edit_run();
     ui_run(r, param);
 }
 
