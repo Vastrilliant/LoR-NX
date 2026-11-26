@@ -54,7 +54,11 @@ static void frame_run(uint64_t *r, int param) {
     if (++g_frame < g_next_check) return;
     g_next_check = g_frame + K_RECHECK_FRAMES;
     int tw, th;
-    if (!target_size(&tw, &th)) return;
+    if (!target_size(&tw, &th)) {
+        static int logged;
+        if (logged++ < 3) LOG("[mod fullscreen-mode] frame %d: no usable screen size yet", g_frame);
+        return;
+    }
     int sw = FN(K_SCREEN_GET_WIDTH, int, const void *)(NULL), sh = FN(K_SCREEN_GET_HEIGHT, int, const void *)(NULL);
     if (sw == tw && sh == th) {
         static int logged;
