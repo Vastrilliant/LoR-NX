@@ -109,14 +109,21 @@ int dm_opmode(void);
 #define K_SAME_SPOT 0.012f
 #define K_HL_ALPHA 0.4f
 #define K_LAYOUT_FILE "fullscreen_layout.txt"
+#define K_BAKE_VER 1
+#define K_BAKE_FILE "fullscreen_baked.txt"
+#define K_BAKE_SAVE_EVERY 600
+#define K_BAKE_MISS_MAX 3
+#define K_BAKE_MAX (1 << 20)
+#define K_UI_EVERY_BAKED 8
 
 typedef struct { float x, y; } vec2;
 typedef struct { float x, y, z; } vec3;
 typedef struct { float x, y, w, h; } rect4;
 typedef struct { void *obj; float oa[4], oo[4], aa[4], ao[4], sh; uint32_t kh; uint8_t seen, logged, vlog, keep, kind, act; } rec_t;
 typedef struct { int ax; double size, design, osize, cscale; } cv_t;
-typedef struct { double des0, dsz, act0, asz, kp, v0, vsz; int grp, through; } par_t;
+typedef struct { double des0, dsz, act0, asz, kp, v0, vsz; int grp, through, grp_ok, n; void *ptf; } par_t;
 typedef struct { float r, g, b, a; } rgba;
+typedef struct { uint32_t h; float wc, oa[4], oo[4], fa[4], fo[4], pc[5]; uint8_t act, placed, block, bleed, miss; } bk_t;
 typedef struct { double x0, xs, y0, ys, kp; } pk_t;
 typedef struct { uint32_t h; uint8_t mode; float dx, dy; char key[K_KEY_MAX]; } ov_t;
 typedef struct { uint32_t h; int16_t ov; uint8_t anc; } slot_t;
@@ -592,6 +599,228 @@ static void layout_save(void) {
     LOG("[mod fullscreen-mode] layout: %d placements saved to %s", n, layout_path());
 }
 
+static bk_t *s_bk;
+static uint32_t *s_bk_ix, s_bk_sig;
+static int s_bk_n, s_bk_cap, s_bk_ixcap, s_bk_saved, s_bk_dirty, s_bk_rewrite, s_bk_save_at, s_bake = -1;
+
+static const char *bake_path(void) {
+    const char *v = getenv("DM_MOD_FULLSCREEN_BAKE_FILE");
+    return v && v[0] ? v : K_BAKE_FILE;
+}
+
+static int bake_on(void) {
+    if (s_bake < 0) {
+        const char *v = getenv("DM_MOD_FULLSCREEN_BAKE");
+        s_bake = v && v[0] == '1';
+        if (s_bake) s_paths = 1;
+        LOG("[mod fullscreen-mode] baked layout %s (DM_MOD_FULLSCREEN_BAKE=%s): element placements are remembered in %s and reused without running the layout algorithm", s_bake ? "on" : "off", v ? v : "unset", bake_path());
+    }
+    return s_bake == 1 && s_edit != 1;
+}
+
+static uint32_t bk_home(uint32_t h, uint32_t mask) {
+    return ((h * 2654435761u) >> 7) & mask;
+}
+
+static void bk_ix_put(int idx) {
+    uint32_t mask = (uint32_t)s_bk_ixcap - 1, i = bk_home(s_bk[idx].h, mask);
+    while (s_bk_ix[i]) i = (i + 1) & mask;
+    s_bk_ix[i] = (uint32_t)idx + 1;
+}
+
+static int bk_grow(void) {
+    if (s_bk_cap >= K_BAKE_MAX) return 0;
+    int cap = s_bk_cap ? s_bk_cap * 2 : 8192, ixcap = cap * 2;
+    bk_t *p = realloc(s_bk, (size_t)cap * sizeof *p);
+    if (!p) return 0;
+    s_bk = p;
+    uint32_t *ix = calloc((size_t)ixcap, sizeof *ix);
+    if (!ix) return 0;
+    free(s_bk_ix);
+    s_bk_ix = ix;
+    s_bk_ixcap = ixcap;
+    s_bk_cap = cap;
+    for (int i = 0; i < s_bk_n; i++) bk_ix_put(i);
+    return 1;
+}
+
+static bk_t *bk_add(const bk_t *e) {
+    if (s_bk_n >= s_bk_cap && !bk_grow()) return NULL;
+    int idx = s_bk_n;
+    s_bk[idx] = *e;
+    bk_ix_put(idx);
+    s_bk_n++;
+    return &s_bk[idx];
+}
+
+static bk_t *bk_find(uint32_t h, double wc) {
+    if (!s_bk_ix) return NULL;
+    uint32_t mask = (uint32_t)s_bk_ixcap - 1, i = bk_home(h, mask);
+    for (uint32_t k = 0; k < (uint32_t)s_bk_ixcap; k++) {
+        uint32_t v = s_bk_ix[(i + k) & mask];
+        if (!v) return NULL;
+        bk_t *e = &s_bk[v - 1];
+        if (e->h == h && fabs((double)e->wc - wc) < 0.5) return e;
+    }
+    return NULL;
+}
+
+static int bk_match(const bk_t *b, const rec_t *r, const par_t *pp) {
+    return same4(r->oa, b->oa, 1e-5f) && same4(r->oo, b->oo, 1e-3f) && fabs(pp->act0 - b->pc[0]) < 0.5 && fabs(pp->asz - b->pc[1]) < 0.5 && fabs(pp->v0 - b->pc[2]) < 0.5 && fabs(pp->vsz - b->pc[3]) < 0.5 && fabs(pp->kp - b->pc[4]) < 0.001;
+}
+
+static void bake_record(bk_t *old, const rec_t *r, double wc, const par_t *pp, int act, int placed, int block, int bleed, const float *fa, const float *fo) {
+    bk_t e;
+    memset(&e, 0, sizeof e);
+    e.h = r->kh;
+    e.wc = (float)wc;
+    memcpy(e.oa, r->oa, sizeof e.oa);
+    memcpy(e.oo, r->oo, sizeof e.oo);
+    memcpy(e.fa, fa, sizeof e.fa);
+    memcpy(e.fo, fo, sizeof e.fo);
+    e.pc[0] = (float)pp->act0;
+    e.pc[1] = (float)pp->asz;
+    e.pc[2] = (float)pp->v0;
+    e.pc[3] = (float)pp->vsz;
+    e.pc[4] = (float)pp->kp;
+    e.act = (uint8_t)act;
+    e.placed = (uint8_t)placed;
+    e.block = (uint8_t)block;
+    e.bleed = (uint8_t)bleed;
+    if (old) {
+        e.miss = (uint8_t)(old->miss + 1);
+        *old = e;
+        s_bk_rewrite = 1;
+        s_bk_dirty = 1;
+        return;
+    }
+    if (bk_add(&e)) s_bk_dirty = 1;
+}
+
+static void bk_pack(bk_t *e, float *g[5]) {
+    g[0] = e->oa;
+    g[1] = e->oo;
+    g[2] = e->fa;
+    g[3] = e->fo;
+    g[4] = e->pc;
+}
+
+static void bk_write(FILE *f, const bk_t *e) {
+    bk_t c = *e;
+    float *g[5];
+    static const int cnt[5] = {4, 4, 4, 4, 5};
+    bk_pack(&c, g);
+    fprintf(f, "%08x %.3f %d %d %d %d %d", c.h, c.wc, c.act, c.placed, c.block, c.bleed, c.miss);
+    for (int i = 0; i < 5; i++)
+        for (int k = 0; k < cnt[i]; k++) fprintf(f, " %.9g", g[i][k]);
+    fputc('\n', f);
+}
+
+static int bk_parse(const char *s, bk_t *e) {
+    const char *p = s;
+    char *q = NULL;
+    float *g[5];
+    static const int cnt[5] = {4, 4, 4, 4, 5};
+    long iv[5];
+    memset(e, 0, sizeof *e);
+    e->h = (uint32_t)strtoul(p, &q, 16);
+    if (q == p) return 0;
+    p = q;
+    e->wc = strtof(p, &q);
+    if (q == p) return 0;
+    p = q;
+    for (int i = 0; i < 5; i++) {
+        iv[i] = strtol(p, &q, 10);
+        if (q == p) return 0;
+        p = q;
+    }
+    e->act = (uint8_t)iv[0];
+    e->placed = (uint8_t)iv[1];
+    e->block = (uint8_t)iv[2];
+    e->bleed = (uint8_t)iv[3];
+    e->miss = (uint8_t)iv[4];
+    bk_pack(e, g);
+    for (int i = 0; i < 5; i++)
+        for (int k = 0; k < cnt[i]; k++) {
+            g[i][k] = strtof(p, &q);
+            if (q == p) return 0;
+            p = q;
+        }
+    return e->h != 0 && e->act < ACT_COUNT;
+}
+
+static void bake_sig(void) {
+    uint32_t sum = (uint32_t)K_BAKE_VER * 2654435761u;
+    char buf[K_KEY_MAX + 48];
+    for (int i = 0; i < s_ov_n; i++) {
+        if (!s_ov[i].key[0]) continue;
+        snprintf(buf, sizeof buf, "%s|%d|%.1f|%.1f", s_ov[i].key, s_ov[i].mode, s_ov[i].dx, s_ov[i].dy);
+        sum += fnv(2166136261u, buf);
+    }
+    s_bk_sig = sum;
+}
+
+static void bake_load(void) {
+    FILE *f = fopen(bake_path(), "r");
+    if (!f) { s_bk_rewrite = 1; LOG("[mod fullscreen-mode] baked layout: no file %s, placements are recorded as the UI is seen", bake_path()); return; }
+    char line[512];
+    int ver = 0, n = 0;
+    unsigned sig = 0;
+    if (!fgets(line, sizeof line, f) || sscanf(line, "# fullscreen-mode baked layout v%d sig %x", &ver, &sig) != 2 || ver != K_BAKE_VER || sig != s_bk_sig) {
+        fclose(f);
+        s_bk_rewrite = 1;
+        LOG("[mod fullscreen-mode] baked layout: %s is for another layout or version, starting over", bake_path());
+        return;
+    }
+    while (fgets(line, sizeof line, f)) {
+        bk_t e;
+        if (line[0] == '#' || !bk_parse(line, &e)) continue;
+        if (bk_add(&e)) n++;
+    }
+    fclose(f);
+    s_bk_saved = s_bk_n;
+    LOG("[mod fullscreen-mode] baked layout: %d placements loaded from %s", n, bake_path());
+}
+
+static void bake_save(void) {
+    if (!s_bk_dirty) return;
+    FILE *f = fopen(bake_path(), s_bk_rewrite ? "w" : "a");
+    if (!f) { LOG("[mod fullscreen-mode] baked layout: cannot write %s", bake_path()); s_bk_dirty = 0; return; }
+    int from = s_bk_saved;
+    if (s_bk_rewrite) {
+        fprintf(f, "# fullscreen-mode baked layout v%d sig %08x\n", K_BAKE_VER, s_bk_sig);
+        from = 0;
+    }
+    for (int i = from; i < s_bk_n; i++) bk_write(f, &s_bk[i]);
+    fclose(f);
+    LOG("[mod fullscreen-mode] baked layout: %d placements %s %s", s_bk_n - from, s_bk_rewrite ? "written to" : "appended to", bake_path());
+    s_bk_saved = s_bk_n;
+    s_bk_rewrite = 0;
+    s_bk_dirty = 0;
+}
+
+static void bake_open(void) {
+    if (!bake_on()) return;
+    bake_sig();
+    bake_load();
+}
+
+static void bake_flush(void) {
+    if (!bake_on() || !s_bk_dirty || g_frame < s_bk_save_at) return;
+    s_bk_save_at = g_frame + K_BAKE_SAVE_EVERY;
+    bake_save();
+}
+
+static int ui_every(void) {
+    static int v;
+    if (!v) {
+        const char *e = getenv("DM_MOD_FULLSCREEN_UI_EVERY");
+        int n = e ? atoi(e) : 0;
+        v = n > 0 ? n : (bake_on() ? K_UI_EVERY_BAKED : K_UI_EVERY);
+    }
+    return v;
+}
+
 static int ov_apply(int mode, double d0, double d1, const cv_t *cv, double *t0, double *t1) {
     double wc = cv->size, dw = cv->design, pad = (wc - dw) / 2.0, mid = dw / 2.0;
     switch (mode) {
@@ -624,6 +853,9 @@ static void child_par(par_t *np, const cv_t *cv, const par_t *pp, const rec_t *r
     np->vsz = ((double)r->oa[2 + ay] - r->oa[ay]) * pp->vsz + ((double)r->oo[2 + ay] - r->oo[ay]);
     np->grp = 0;
     np->through = 0;
+    np->grp_ok = 1;
+    np->n = 0;
+    np->ptf = NULL;
 }
 
 static int place_axis(void *tf, int ax, double org, double psz, double kp, double t0, double t1, double *o0, double *o1) {
@@ -722,8 +954,17 @@ static int settle_container(void *tf, rec_t *r, const cv_t *cv, double d0, doubl
 }
 
 static void process_children(void *tf, const cv_t *cv, const par_t *pp, int depth);
+static int group_centred(void *tf, const cv_t *cv, const par_t *pp, int n);
 
-static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, int *bleed) {
+static int grp_resolve(const cv_t *cv, par_t *pp) {
+    if (!pp->grp_ok) {
+        pp->grp_ok = 1;
+        pp->grp = pp->through || !pp->ptf ? 0 : group_centred(pp->ptf, cv, pp, pp->n);
+    }
+    return pp->grp;
+}
+
+static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth, int *bleed) {
     if (g_budget <= 0) { g_starved = 1; return; }
     g_budget--;
     int ax = cv->ax, ay = 1 - ax;
@@ -801,7 +1042,34 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
     double u0 = r->oa[ay] * pp->vsz + r->oo[ay];
     double u1 = r->oa[2 + ay] * pp->vsz + r->oo[2 + ay];
     double v0 = pp->v0 + fmin(u0, u1) * pp->kp, v1 = pp->v0 + fmax(u0, u1) * pp->kp;
-    int nchild = -1, art = 0;
+    int bake = bake_on() && r->kh;
+    bk_t *bk = bake ? bk_find(r->kh, cv->size) : NULL;
+    if (bk && bk->miss >= K_BAKE_MISS_MAX) bake = 0;
+    if (bake && bk && bk_match(bk, r, pp)) {
+        int bact = bk->act, bblock = bk->block;
+        g_act[bact]++;
+        if (bk->bleed) *bleed = 1;
+        if (bact == ACT_SKIP) return;
+        if (bk->placed) {
+            if (!same4(ca, bk->fa, 1e-5f) || !same4(co, bk->fo, 1e-3f)) {
+                rt_write_anchors(tf, bk->fa);
+                rt_write_offsets(tf, bk->fo);
+                rt_read(tf, ca, co);
+                memcpy(r->aa, ca, sizeof r->aa);
+                memcpy(r->ao, co, sizeof r->ao);
+                g_changed++;
+            }
+            r->keep = 1;
+        }
+        double ba0 = pp->act0 + (ca[ax] * pp->asz + co[ax]) * pp->kp;
+        if (depth >= K_MAX_DEPTH || (bblock && !anc)) return;
+        par_t bp;
+        child_par(&bp, cv, pp, r, ca, co, d0, lo, hi, ba0, v0, kpn);
+        bp.through = bblock;
+        process_children(tf, cv, &bp, depth + 1);
+        return;
+    }
+    int nchild = -1, art = 0, bset = 0;
     if (d0 <= K_FULL_TOL && cv->design - d1 <= K_FULL_TOL && v0 <= K_FULL_TOL && cv->osize - v1 <= K_FULL_TOL) {
         nchild = child_count(tf);
         if (nchild == 0) {
@@ -812,11 +1080,12 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
                 r->keep = 1;
             }
             *bleed = 1;
+            bset = 1;
         }
     }
     double t0 = 0.0, t1 = 0.0;
     int act = classify(d0, d1, cv, art, &t0, &t1);
-    if (pp->grp && (act == ACT_LEFT || act == ACT_RIGHT)) {
+    if ((act == ACT_LEFT || act == ACT_RIGHT) && grp_resolve(cv, pp)) {
         double gp = (cv->size - cv->design) / 2.0;
         t0 = d0 + gp;
         t1 = d1 + gp;
@@ -833,6 +1102,7 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
     double a0 = pp->act0 + (ca[ax] * pp->asz + co[ax]) * pp->kp;
     double a1 = pp->act0 + (ca[2 + ax] * pp->asz + co[2 + ax]) * pp->kp;
     if (act == ACT_SKIP) {
+        if (bake) bake_record(bk, r, cv->size, pp, act, 0, 1, bset, ca, co);
         if (!r->logged && log_ok()) {
             char name[48];
             ascii_name(tf, name, sizeof name);
@@ -876,6 +1146,7 @@ static void process_node(void *tf, const cv_t *cv, const par_t *pp, int depth, i
     }
     int deep = act == ACT_STRETCH || act == ACT_THRU;
     int block = !deep || opaque(tf);
+    if (bake) bake_record(bk, r, cv->size, pp, act, act != ACT_THRU, block, bset, ca, co);
     if (depth >= K_MAX_DEPTH || (block && !anc)) return;
     par_t np;
     child_par(&np, cv, pp, r, ca, co, d0, lo, hi, a0, v0, kpn);
@@ -924,8 +1195,11 @@ static int group_centred(void *tf, const cv_t *cv, const par_t *pp, int n) {
 static void process_children(void *tf, const cv_t *cv, const par_t *pp0, int depth) {
     int n = child_count(tf), bleed = 0;
     par_t lp = *pp0;
-    lp.grp = pp0->through ? 0 : group_centred(tf, cv, pp0, n);
-    const par_t *pp = &lp;
+    lp.ptf = tf;
+    lp.n = n;
+    lp.grp = 0;
+    lp.grp_ok = pp0->through;
+    par_t *pp = &lp;
     for (int i = 0; i < n && g_budget > 0; i++) {
         void *child = child_at(tf, i);
         if (!child || child == s_hl_tf || (g_skip_inactive && !active_node(child))) continue;
@@ -986,7 +1260,7 @@ static int layout_canvas(void *sc, void *go, const float *ref, double aspect) {
 }
 
 static void sweep_ui(void) {
-    g_next_ui = g_frame + K_UI_EVERY;
+    g_next_ui = g_frame + ui_every();
     int level = ui_level();
     if (level < 1 || !resolve_types()) return;
     int sw = FN(K_SCREEN_GET_WIDTH, int, const void *)(NULL), sh = FN(K_SCREEN_GET_HEIGHT, int, const void *)(NULL);
@@ -1041,6 +1315,7 @@ static void sweep_ui(void) {
         if (g_starved && !was_starved && starved_at < 0) starved_at = i;
     }
     g_start = starved_at < 0 ? 0 : (starved_at == start ? start + 1 : starved_at);
+    bake_flush();
     static int starved_logged;
     if (g_starved && starved_logged++ < 20) LOG("[mod fullscreen-mode] frame %d: node budget %d used up at canvas %d of %d, the next sweep resumes there", g_frame, K_NODE_BUDGET, starved_at, (int)n);
     static int logged;
@@ -1645,7 +1920,7 @@ static void frame_run(uint64_t *r, int param) {
         if (strncmp(dm_main_build(), K_BUILD_ID, 32) != 0) { g_state = -1; LOG("[mod fullscreen-mode] wrong build, mod stays out"); return; }
         g_state = 1;
         edit_enabled();
-        if (!s_loaded) { s_loaded = 1; if (!layout_load()) layout_defaults(); }
+        if (!s_loaded) { s_loaded = 1; if (!layout_load()) layout_defaults(); bake_open(); }
     }
     if (++g_frame < g_next_check) return;
     g_next_check = g_frame + K_RECHECK_FRAMES;
