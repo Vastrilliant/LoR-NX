@@ -481,9 +481,83 @@ static const char *layout_path(void) {
     return v && v[0] ? v : K_LAYOUT_FILE;
 }
 
-static void layout_load(void) {
+typedef struct { const char *key; uint8_t mode; float dx, dy; } layout_default_t;
+
+static const layout_default_t k_layout_default[] = {
+    {"c:TitleUICanvas/_Root_RuinTitle[0]/_Rect_ZoomPivot[3]/_Rect_TitleLogo[0]/_Rect_Buttons[4]/_Image_BlackFrame[3]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:TitleUICanvas/_Root_RuinTitle[0]/_Rect_ZoomPivot[3]/_Rect_TitleLogo[0]/_Rect_Buttons[4]/_Image_ExitBG[1]", OV_RIGHT, 0.0f, 0.0f},
+    {"c:TitleUICanvas/_Root_RuinTitle[0]/_Rect_ZoomPivot[3]/_Rect_TitleLogo[0]/_Rect_Buttons[4]", OV_RIGHT, 0.0f, 0.0f},
+    {"c:FrontCanvas/Librarian_Info_Panel(Clone)[11]/PanelActiveController[0]/_Rect_EquipCardSlotView[4]/_Button_CustomSelectableGraphic[0]", OV_CENTER, 0.0f, 0.0f},
+    {"c:FrontCanvas/Librarian_Info_Panel(Clone)[11]/PanelActiveController[0]/_Rect_EquipCardSlotView[4]", OV_CENTER, 0.0f, 0.0f},
+    {"c:Canvas_Script_PopupCanvas(Clone)/_Prefab_PopupAlarm[3]/_Rect_Blue[3]/_Image_BgFrame[1]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/Popup[4]/_Popup_PopupPassiveSuccessionPopup[4]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/Librarian_Info_Panel(Clone)[12]/PanelActiveController[0]/_Rect_EquipCardSlotView[4]", OV_CENTER, 0.0f, 0.0f},
+    {"c:FrontCanvas/Popup[4]/_Popup_GachaResultPopup[5]/PanelActiveController[0]/Center_Panel[0]/Background[2]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/Popup[4]/_Popup_GachaResultPopup[5]/PanelActiveController[0]/Center_Panel[0]/BlackBg[1]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:Canvas_UI/_Rect_Buttons[8]/FastButton[1]", OV_LEFT, 0.0f, 0.0f},
+    {"c:Canvas_UI/_Rect_Buttons[8]/FastButton[1]/_Image_Icon[0]", OV_LEFT, 0.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/Btn[10]", OV_CENTER, 0.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_Left_Lv2_LinearDodge[5]", OV_CENTER, 0.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_Right_Lv1_LinearDodge[6]", OV_CENTER, 0.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_Left_Lv1_LinearDodge[7]", OV_CENTER, 0.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_Right_Lv2_LinearDodge[4]", OV_CENTER, 0.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_Right_Lv1[3]", OV_CENTER, 0.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_Right_Lv2[1]", OV_CENTER, 0.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_Left_Lv2[0]", OV_CENTER, 0.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_Left_Lv1[2]", OV_CENTER, 0.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Rect_TargetCheckToggles[16]/_Image_Bg[0]", OV_AUTO, -128.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_AutoEquipCard[13]", OV_AUTO, 64.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_PlayAuto[12]/_Image_BG[1]", OV_AUTO, 80.0f, 0.0f},
+    {"c:_Canvas_EmotionInfoUI/_Transform_EmotionBar_ROOT[2]/_Rect_CenterRoot[2]/_Image_UnequipCardAll[14]", OV_AUTO, 64.0f, 0.0f},
+    {"c:FrontCanvas/Librarian_Info_Panel(Clone)[15]/PanelActiveController[0]/_Rect_EquipCardSlotView[4]", OV_CENTER, 0.0f, 0.0f},
+    {"c:FrontCanvas/Panel_Invitation_Panel(Clone)[9]/PanelActiveController[0]/_Rect_CenterPanel[0]", OV_AUTO, 288.0f, 0.0f},
+    {"c:FrontCanvas/Panel_Invitation_Panel(Clone)[9]/PanelActiveController[0]/_Rect_CenterPanel[0]/_Script_StoryProgress[1]/PanelActiveController[0]/Central_Panel[0]/_RectMask_Viewport[0]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/Panel_Invitation_Panel(Clone)[9]/PanelActiveController[0]/_Rect_CenterPanel[0]/_Script_StoryProgress[1]/PanelActiveController[0]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/Panel_BattlePagePanel(Clone)[12]/PanelActiveController[0]/_Image_PanelBlackout[0]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/Panel_EquipPageInvenPanel(Clone)[13]/PanelActiveController[0]/_Image_PanelBlackout[1]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/Librarian_Info_Panel(Clone)[14]/PanelActiveController[0]/_Rect_EquipCardSlotView[4]", OV_CENTER, 0.0f, 0.0f},
+    {"c:FrontCanvas/Librarian_Info_Panel(Clone)[14]/PanelActiveController[0]/_Rect_EquipCardSlotView[4]/_Button_CustomSelectableGraphic[0]/_Image_buttonImage[0]", OV_CENTER, 0.0f, 0.0f},
+    {"c:FrontCanvas/Librarian_Info_Panel(Clone)[14]/PanelActiveController[0]/_Rect_EquipCardSlotView[4]/_Button_CustomSelectableGraphic[0]", OV_CENTER, 0.0f, 0.0f},
+    {"c:FrontCanvas/UIControlButton_Panel(Clone)[6]/PanelActiveController[0]/EnterTarget[0]/_Rect_MenuItems[3]/_Rect_LowerPivot[2]", OV_AUTO, 80.0f, 0.0f},
+    {"c:FrontCanvas/UIControlButton_Panel(Clone)[6]/PanelActiveController[0]/EnterTarget[0]/_Rect_MenuItems[3]/_Button_MenuItem_Main[1]", OV_AUTO, 80.0f, 0.0f},
+    {"c:FrontCanvas/UIControlButton_Panel(Clone)[6]/PanelActiveController[0]/EnterTarget[0]/_Rect_MenuItems[3]/Image[0]", OV_AUTO, 80.0f, 0.0f},
+    {"c:FrontCanvas/UIControlButton_Panel(Clone)[6]/PanelActiveController[0]/EnterTarget[0]", OV_AUTO, 96.0f, 0.0f},
+    {"c:FrontCanvas/LibrarianCharacterList_Panel(Clone)[7]/PanelActiveController[0]", OV_AUTO, -64.0f, 0.0f},
+    {"c:FrontCanvas/_Rect_MainUIBgFrames[1]/_Rect_Right[1]/MainPanel_Bg_InnterImageRight[0]", OV_AUTO, -64.0f, 0.0f},
+    {"c:FrontCanvas/Script_FloorInfo_Panel(Clone)[8]/PanelActiveController[0]/_Rect_Info_Panel[0]", OV_AUTO, -56.0f, 0.0f},
+    {"c:FrontCanvas/Panel_BattlePagePanel(Clone)[12]/PanelActiveController[0]/_Script_Right_Panel[2]/_Script_LibrarianInfoCardPhase[0]", OV_AUTO, -40.0f, 0.0f},
+    {"c:FrontCanvas/Panel_BattlePagePanel(Clone)[10]/PanelActiveController[0]/_Script_Right_Panel[2]", OV_AUTO, -60.0f, 0.0f},
+    {"c:FrontCanvas/Panel_EquipPageInvenPanel(Clone)[11]/PanelActiveController[0]/_Script_Right_Panel[2]", OV_AUTO, -60.0f, 0.0f},
+    {"c:FrontCanvas/Librarian_Info_Panel(Clone)[12]/PanelActiveController[0]/LibrarianInfo_AppearanceInfoPanel[5]", OV_AUTO, -60.0f, 0.0f},
+    {"c:FrontCanvas/Panel_BattlePagePanel(Clone)[10]/PanelActiveController[0]/_Image_PanelBlackout[0]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/Panel_EquipPageInvenPanel(Clone)[11]/PanelActiveController[0]/_Image_PanelBlackout[1]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/_Rect_MainUIBgFrames[1]/_Rect_Left[0]/MainPanel_Bg_InnterImageLeft[0]", OV_AUTO, 112.0f, 0.0f},
+    {"c:FrontCanvas/Panel_BattlePagePanel(Clone)[10]/PanelActiveController[0]/_Librarian_Left_Panel[3]", OV_AUTO, 112.0f, 0.0f},
+    {"c:FrontCanvas/Panel_EquipPageInvenPanel(Clone)[11]/PanelActiveController[0]/_Rect_Left_Panel[3]", OV_AUTO, 96.0f, 0.0f},
+    {"c:FrontCanvas/Panel_BattlePagePanel(Clone)[12]/PanelActiveController[0]/_Librarian_Left_Panel[3]", OV_AUTO, 128.0f, 0.0f},
+    {"c:FrontCanvas/Panel_EquipPageInvenPanel(Clone)[13]/PanelActiveController[0]/_Rect_Left_Panel[3]/_Script_InvenLeftEquipPagePanel[0]", OV_AUTO, 112.0f, 0.0f},
+    {"c:FrontCanvas/Panel_Invitation_Panel(Clone)[13]/PanelActiveController[0]/_Rect_CenterPanel[0]/_Script_StoryProgress[1]/PanelActiveController[0]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/Panel_Invitation_Panel(Clone)[13]/PanelActiveController[0]/_Rect_CenterPanel[0]/_Script_StoryProgress[1]", OV_STRETCH, 0.0f, 0.0f},
+    {"c:FrontCanvas/Panel_Invitation_Panel(Clone)[13]/PanelActiveController[0]/_Rect_CenterPanel[0]/_Script_StoryProgress[1]/PanelActiveController[0]/Central_Panel[0]", OV_STRETCH, 0.0f, 0.0f},
+};
+
+static void layout_defaults(void) {
+    int n = 0;
+    for (size_t i = 0; i < sizeof k_layout_default / sizeof *k_layout_default; i++) {
+        const layout_default_t *d = &k_layout_default[i];
+        ov_t *o = ov_make(d->key);
+        if (!o) continue;
+        o->mode = d->mode;
+        o->dx = d->dx;
+        o->dy = d->dy;
+        n++;
+    }
+    LOG("[mod fullscreen-mode] layout: %d built-in placements loaded", n);
+}
+
+static int layout_load(void) {
     FILE *f = fopen(layout_path(), "r");
-    if (!f) { LOG("[mod fullscreen-mode] layout: no file %s, nothing to load", layout_path()); return; }
+    if (!f) { LOG("[mod fullscreen-mode] layout: no file %s, using the built-in layout", layout_path()); return 0; }
     char line[K_KEY_MAX + 64];
     int n = 0;
     while (fgets(line, sizeof line, f)) {
@@ -500,6 +574,7 @@ static void layout_load(void) {
     }
     fclose(f);
     LOG("[mod fullscreen-mode] layout: %d placements loaded from %s", n, layout_path());
+    return 1;
 }
 
 static void layout_save(void) {
@@ -1570,7 +1645,7 @@ static void frame_run(uint64_t *r, int param) {
         if (strncmp(dm_main_build(), K_BUILD_ID, 32) != 0) { g_state = -1; LOG("[mod fullscreen-mode] wrong build, mod stays out"); return; }
         g_state = 1;
         edit_enabled();
-        if (!s_loaded) { s_loaded = 1; layout_load(); }
+        if (!s_loaded) { s_loaded = 1; if (!layout_load()) layout_defaults(); }
     }
     if (++g_frame < g_next_check) return;
     g_next_check = g_frame + K_RECHECK_FRAMES;
