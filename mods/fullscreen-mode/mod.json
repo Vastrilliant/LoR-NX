@@ -8,6 +8,26 @@
     "label": "Fullscreen Mode",
     "note": "Makes the game render at true fullscreen without stretching. Based off of Bat'ko Makhno's Resolution Fix Steam Workshop mod"
   },
+  "settings": [
+    {
+      "env": "DM_MOD_FULLSCREEN_IGNORE_BUILTIN",
+      "kind": "toggle",
+      "on": "1",
+      "off": "0",
+      "label": "Ignore built-in layout fixes",
+      "note": "Skips the hand-made placements built into the mod and uses only the automatic layout (plus the placements you saved in the layout editor).",
+      "default": "0"
+    },
+    {
+      "env": "DM_MOD_FULLSCREEN_EDIT",
+      "kind": "toggle",
+      "on": "1",
+      "off": "0",
+      "label": "Layout editor",
+      "note": "Shows the Layout button in the game. Tap an element to pick it, set how it is placed and nudge it, then Save.",
+      "default": "0"
+    }
+  ],
   "game": "Library of Ruina 1.0.3",
   "gates": [
     "frame_pre"

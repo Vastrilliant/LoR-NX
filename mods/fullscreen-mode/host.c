@@ -60,6 +60,13 @@ int dm_opmode(void);
 #define K_CAMERA_GET_TEXTURE 0x17EB5F0u
 #define K_GO_GET_LAYER 0x19AFBF0u
 #define K_TRANSFORM_GET_LOSSY_SCALE 0x19BFA20u
+#define K_IMAGE_GET_OVERRIDE_SPRITE 0x24E57E0u
+#define K_SPRITE_GET_TEXTURE 0x19C1BD0u
+#define K_RAWIMAGE_GET_TEXTURE 0x2969270u
+#define K_TEXTURE_GET_WIDTH 0x2BE3930u
+#define K_TEXTURE_GET_HEIGHT 0x2BE39D0u
+#define K_TEX2D_WHITE 0x2BE48E0u
+#define K_OBJECT_GETTYPE 0x29B10F0u
 #define F_ARRAY_LEN 0x18
 #define F_ARRAY_DATA 0x20
 #define F_SCALER_MODE 0x18
@@ -86,15 +93,16 @@ int dm_opmode(void);
 #define K_FULL_TOL 2.0
 #define K_WIDE_FRAC 0.7
 #define K_BAND_FRAC 0.5
-#define K_CENTER_FRAC 0.02
-#define K_MIDDLE_FRAC 0.10
-#define K_EDGE_FRAC 0.06
+#define K_NEAR_FRAC 0.10
 #define K_STRETCH_MARGIN 0.08
 #define K_POINT_FRAC 0.05
 #define K_GROUP_EDGE 0.06
 #define K_GROUP_OFF 0.20
 #define K_GROUP_GAP 0.08
-#define K_ART_DEPTH 1
+#define K_CG_MIN_W 960
+#define K_CG_MIN_H 540
+#define K_CG_ASPECT_MIN 1.5
+#define K_CG_ASPECT_MAX 2.4
 #define K_SCALE_MIN 0.05
 #define K_APPLY_EPS 0.5
 #define K_DESIGN_ASPECT (16.0 / 9.0)
@@ -109,7 +117,7 @@ int dm_opmode(void);
 #define K_SAME_SPOT 0.012f
 #define K_HL_ALPHA 0.4f
 #define K_LAYOUT_FILE "fullscreen_layout.txt"
-#define K_BAKE_VER 1
+#define K_BAKE_VER 2
 #define K_BAKE_FILE "fullscreen_baked.txt"
 #define K_BAKE_SAVE_EVERY 600
 #define K_BAKE_MISS_MAX 3
@@ -119,11 +127,11 @@ int dm_opmode(void);
 typedef struct { float x, y; } vec2;
 typedef struct { float x, y, z; } vec3;
 typedef struct { float x, y, w, h; } rect4;
-typedef struct { void *obj; float oa[4], oo[4], aa[4], ao[4], sh; uint32_t kh; uint8_t seen, logged, vlog, keep, kind, act; } rec_t;
+typedef struct { void *obj, *tex; float oa[4], oo[4], aa[4], ao[4], sh; uint32_t kh; uint8_t seen, logged, vlog, keep, kind, act, cover; } rec_t;
 typedef struct { int ax; double size, design, osize, cscale; } cv_t;
 typedef struct { double des0, dsz, act0, asz, kp, v0, vsz; int grp, through, grp_ok, n; void *ptf; } par_t;
 typedef struct { float r, g, b, a; } rgba;
-typedef struct { uint32_t h; float wc, oa[4], oo[4], fa[4], fo[4], pc[5]; uint8_t act, placed, block, bleed, miss; } bk_t;
+typedef struct { uint32_t h; float wc, oa[4], oo[4], fa[4], fo[4], pc[5]; uint8_t act, placed, block, miss; } bk_t;
 typedef struct { double x0, xs, y0, ys, kp; } pk_t;
 typedef struct { uint32_t h; uint8_t mode; float dx, dy; char key[K_KEY_MAX]; } ov_t;
 typedef struct { uint32_t h; int16_t ov; uint8_t anc; } slot_t;
@@ -156,7 +164,7 @@ static pick_t *s_pick;
 static int s_pick_cap, s_sel_world, s_wld_next;
 static double s_unit = 1.0;
 static wld_t s_wld[K_OV_MAX];
-static void *s_sel_tf, *s_sel_rend, *s_sel_cam, *s_ui_root, *s_hl_img, *s_hl_tf, *s_hl_src, *g_image_type, *g_rend_type;
+static void *s_sel_tf, *s_sel_rend, *s_sel_cam, *s_ui_root, *s_hl_img, *s_hl_tf, *s_hl_src, *g_image_type, *g_rend_type, *g_raw_type, *g_tex_type;
 static int g_rend_tries;
 static float s_last_nx = -1.0f, s_last_ny = -1.0f;
 typedef struct { int kind; float a, b; } fs_cmd_t;
@@ -195,14 +203,19 @@ static void *find_type(const char *name) {
 }
 
 static int resolve_types(void) {
-    if (g_scaler_type && g_layout_type && g_scroll_type) return 1;
+    if (g_scaler_type && g_layout_type && g_scroll_type && g_image_type && g_raw_type && g_tex_type) return 1;
     if (g_type_tries < K_TYPE_TRIES) {
         g_type_tries++;
         if (!g_scaler_type) g_scaler_type = find_type("UnityEngine.UI.CanvasScaler, UnityEngine.UI");
         if (!g_layout_type) g_layout_type = find_type("UnityEngine.UI.LayoutGroup, UnityEngine.UI");
         if (!g_scroll_type) g_scroll_type = find_type("UnityEngine.UI.ScrollRect, UnityEngine.UI");
         if (!g_image_type) g_image_type = find_type("UnityEngine.UI.Image, UnityEngine.UI");
-        LOG("[mod fullscreen-mode] types: CanvasScaler %p, LayoutGroup %p, ScrollRect %p", g_scaler_type, g_layout_type, g_scroll_type);
+        if (!g_raw_type) g_raw_type = find_type("UnityEngine.UI.RawImage, UnityEngine.UI");
+        if (!g_tex_type) {
+            void *white = FN(K_TEX2D_WHITE, void *, const void *)(NULL);
+            if (alive(white)) g_tex_type = FN(K_OBJECT_GETTYPE, void *, void *, const void *)(white, NULL);
+        }
+        LOG("[mod fullscreen-mode] types: CanvasScaler %p, LayoutGroup %p, ScrollRect %p, Image %p, RawImage %p, Texture2D %p", g_scaler_type, g_layout_type, g_scroll_type, g_image_type, g_raw_type, g_tex_type);
     }
     return g_scaler_type != NULL;
 }
@@ -332,7 +345,7 @@ static void rec_sync(rec_t *r, const float *ca, const float *co) {
 
 static int classify(double d0, double d1, const cv_t *cv, int art, double *t0, double *t1) {
     double dw = cv->design, wc = cv->size, pad = (wc - dw) / 2.0, mid = dw / 2.0;
-    double w = d1 - d0, ml = d0, mr = dw - d1, c = (d0 + d1) / 2.0, off = fabs(c - mid);
+    double w = d1 - d0, ml = d0, mr = dw - d1;
     int outside = w > 1.0 ? (d1 <= K_APPLY_EPS || d0 >= dw - K_APPLY_EPS) : (d1 < -K_APPLY_EPS || d0 > dw + K_APPLY_EPS);
     if (outside) return ACT_SKIP;
     if (ml <= K_FULL_TOL && mr <= K_FULL_TOL) {
@@ -346,19 +359,16 @@ static int classify(double d0, double d1, const cv_t *cv, int art, double *t0, d
         *t1 = wc;
         return ACT_STRETCH;
     }
-    if ((ml <= K_STRETCH_MARGIN * dw && mr <= K_STRETCH_MARGIN * dw) || (off <= K_CENTER_FRAC * dw && w >= K_BAND_FRAC * dw)) {
+    if (ml <= K_STRETCH_MARGIN * dw && mr <= K_STRETCH_MARGIN * dw) {
         *t0 = ml;
         *t1 = wc - mr;
         if (*t1 < *t0) *t1 = *t0;
         return ACT_STRETCH;
     }
-    double sh;
-    int act;
-    if (w >= K_BAND_FRAC * dw && ml <= K_EDGE_FRAC * dw && ml < mr) { sh = 0.0; act = ACT_LEFT; }
-    else if (w >= K_BAND_FRAC * dw && mr <= K_EDGE_FRAC * dw && mr < ml) { sh = 2.0 * pad; act = ACT_RIGHT; }
-    else if (w >= K_BAND_FRAC * dw || off <= K_MIDDLE_FRAC * dw) { sh = pad; act = ACT_CENTER; }
-    else if (c < mid) { sh = 0.0; act = ACT_LEFT; }
-    else { sh = 2.0 * pad; act = ACT_RIGHT; }
+    double reach = K_NEAR_FRAC * dw, sh = pad;
+    int act = ACT_CENTER;
+    if (ml <= reach && mr > reach) { sh = 0.0; act = ACT_LEFT; }
+    else if (mr <= reach && ml > reach) { sh = 2.0 * pad; act = ACT_RIGHT; }
     *t0 = d0 + sh;
     *t1 = d1 + sh;
     return act;
@@ -368,6 +378,46 @@ static int opaque(void *tf) {
     if (g_layout_type && alive(FN(K_COMPONENT_GET_COMPONENT, void *, void *, void *, const void *)(tf, g_layout_type, NULL))) return 1;
     if (g_scroll_type && alive(FN(K_COMPONENT_GET_COMPONENT, void *, void *, void *, const void *)(tf, g_scroll_type, NULL))) return 1;
     return 0;
+}
+
+static void *graphic_texture(void *tf) {
+    void *tex = NULL;
+    if (g_image_type) {
+        void *img = FN(K_COMPONENT_GET_COMPONENT, void *, void *, void *, const void *)(tf, g_image_type, NULL);
+        void *spr = alive(img) ? FN(K_IMAGE_GET_OVERRIDE_SPRITE, void *, void *, const void *)(img, NULL) : NULL;
+        if (alive(spr)) tex = FN(K_SPRITE_GET_TEXTURE, void *, void *, const void *)(spr, NULL);
+    }
+    if (!alive(tex) && g_raw_type && g_tex_type) {
+        void *raw = FN(K_COMPONENT_GET_COMPONENT, void *, void *, void *, const void *)(tf, g_raw_type, NULL);
+        tex = alive(raw) ? FN(K_RAWIMAGE_GET_TEXTURE, void *, void *, const void *)(raw, NULL) : NULL;
+        if (alive(tex) && FN(K_OBJECT_GETTYPE, void *, void *, const void *)(tex, NULL) != g_tex_type) tex = NULL;
+    }
+    return alive(tex) ? tex : NULL;
+}
+
+static int cg_texture(void *tex, int *w, int *h) {
+    *w = FN(K_TEXTURE_GET_WIDTH, int, void *, const void *)(tex, NULL);
+    *h = FN(K_TEXTURE_GET_HEIGHT, int, void *, const void *)(tex, NULL);
+    if (*w < K_CG_MIN_W || *h < K_CG_MIN_H) return 0;
+    double aspect = (double)*w / *h;
+    return aspect >= K_CG_ASPECT_MIN && aspect <= K_CG_ASPECT_MAX;
+}
+
+static int node_art(void *tf, rec_t *r) {
+    void *tex = graphic_texture(tf);
+    if ((r->kind == 3 || r->kind == 4) && r->tex == tex) return r->kind == 3;
+    int w = 0, h = 0, art = tex && cg_texture(tex, &w, &h);
+    r->tex = tex;
+    r->kind = art ? 3 : 4;
+    r->keep = 1;
+    if ((art || g_ui_level >= 3) && log_ok()) {
+        char name[48];
+        ascii_name(tf, name, sizeof name);
+        g_log_lines++;
+        if (tex) LOG("[mod fullscreen-mode]   \"%s\" texture %dx%d: %s", name, w, h, art ? "CG, expanded to cover" : "not a CG, stretched");
+        else LOG("[mod fullscreen-mode]   \"%s\" no sprite or texture: stretched", name);
+    }
+    return art;
 }
 
 static int active_node(void *tf) {
@@ -548,7 +598,26 @@ static const layout_default_t k_layout_default[] = {
     {"c:FrontCanvas/Panel_Invitation_Panel(Clone)[13]/PanelActiveController[0]/_Rect_CenterPanel[0]/_Script_StoryProgress[1]/PanelActiveController[0]/Central_Panel[0]", OV_STRETCH, 0.0f, 0.0f},
 };
 
+static int ignore_builtin(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DM_MOD_FULLSCREEN_IGNORE_BUILTIN");
+        on = v && v[0] == '1';
+        LOG("[mod fullscreen-mode] built-in layout fixes %s (DM_MOD_FULLSCREEN_IGNORE_BUILTIN=%s)", on ? "ignored" : "used", v ? v : "unset");
+    }
+    return on;
+}
+
+static int builtin_match(const char *key, int mode, float dx, float dy) {
+    for (size_t i = 0; i < sizeof k_layout_default / sizeof *k_layout_default; i++) {
+        const layout_default_t *d = &k_layout_default[i];
+        if (d->mode == mode && fabsf(d->dx - dx) < 0.05f && fabsf(d->dy - dy) < 0.05f && !strcmp(d->key, key)) return 1;
+    }
+    return 0;
+}
+
 static void layout_defaults(void) {
+    if (ignore_builtin()) return;
     int n = 0;
     for (size_t i = 0; i < sizeof k_layout_default / sizeof *k_layout_default; i++) {
         const layout_default_t *d = &k_layout_default[i];
@@ -564,23 +633,25 @@ static void layout_defaults(void) {
 
 static int layout_load(void) {
     FILE *f = fopen(layout_path(), "r");
-    if (!f) { LOG("[mod fullscreen-mode] layout: no file %s, using the built-in layout", layout_path()); return 0; }
+    if (!f) { LOG("[mod fullscreen-mode] layout: no file %s", layout_path()); return 0; }
     char line[K_KEY_MAX + 64];
-    int n = 0;
+    int n = 0, skipped = 0, ignore = ignore_builtin();
     while (fgets(line, sizeof line, f)) {
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
         char *save = NULL, *key = strtok_r(line, "|", &save), *mode = strtok_r(NULL, "|", &save), *dx = strtok_r(NULL, "|", &save), *dy = strtok_r(NULL, "|\r\n", &save);
         int m = mode ? mode_parse(mode) : -1;
         if (!key || m < 0) continue;
+        float fx = dx ? strtof(dx, NULL) : 0.0f, fy = dy ? strtof(dy, NULL) : 0.0f;
+        if (ignore && builtin_match(key, m, fx, fy)) { skipped++; continue; }
         ov_t *o = ov_make(key);
         if (!o) continue;
         o->mode = (uint8_t)m;
-        o->dx = dx ? strtof(dx, NULL) : 0.0f;
-        o->dy = dy ? strtof(dy, NULL) : 0.0f;
+        o->dx = fx;
+        o->dy = fy;
         n++;
     }
     fclose(f);
-    LOG("[mod fullscreen-mode] layout: %d placements loaded from %s", n, layout_path());
+    LOG("[mod fullscreen-mode] layout: %d placements loaded from %s%s", n, layout_path(), skipped ? ", the built-in ones in it skipped" : "");
     return 1;
 }
 
@@ -669,7 +740,7 @@ static int bk_match(const bk_t *b, const rec_t *r, const par_t *pp) {
     return same4(r->oa, b->oa, 1e-5f) && same4(r->oo, b->oo, 1e-3f) && fabs(pp->act0 - b->pc[0]) < 0.5 && fabs(pp->asz - b->pc[1]) < 0.5 && fabs(pp->v0 - b->pc[2]) < 0.5 && fabs(pp->vsz - b->pc[3]) < 0.5 && fabs(pp->kp - b->pc[4]) < 0.001;
 }
 
-static void bake_record(bk_t *old, const rec_t *r, double wc, const par_t *pp, int act, int placed, int block, int bleed, const float *fa, const float *fo) {
+static void bake_record(bk_t *old, const rec_t *r, double wc, const par_t *pp, int act, int placed, int block, const float *fa, const float *fo) {
     bk_t e;
     memset(&e, 0, sizeof e);
     e.h = r->kh;
@@ -686,7 +757,6 @@ static void bake_record(bk_t *old, const rec_t *r, double wc, const par_t *pp, i
     e.act = (uint8_t)act;
     e.placed = (uint8_t)placed;
     e.block = (uint8_t)block;
-    e.bleed = (uint8_t)bleed;
     if (old) {
         e.miss = (uint8_t)(old->miss + 1);
         *old = e;
@@ -710,7 +780,7 @@ static void bk_write(FILE *f, const bk_t *e) {
     float *g[5];
     static const int cnt[5] = {4, 4, 4, 4, 5};
     bk_pack(&c, g);
-    fprintf(f, "%08x %.3f %d %d %d %d %d", c.h, c.wc, c.act, c.placed, c.block, c.bleed, c.miss);
+    fprintf(f, "%08x %.3f %d %d %d %d", c.h, c.wc, c.act, c.placed, c.block, c.miss);
     for (int i = 0; i < 5; i++)
         for (int k = 0; k < cnt[i]; k++) fprintf(f, " %.9g", g[i][k]);
     fputc('\n', f);
@@ -721,7 +791,7 @@ static int bk_parse(const char *s, bk_t *e) {
     char *q = NULL;
     float *g[5];
     static const int cnt[5] = {4, 4, 4, 4, 5};
-    long iv[5];
+    long iv[4];
     memset(e, 0, sizeof *e);
     e->h = (uint32_t)strtoul(p, &q, 16);
     if (q == p) return 0;
@@ -729,7 +799,7 @@ static int bk_parse(const char *s, bk_t *e) {
     e->wc = strtof(p, &q);
     if (q == p) return 0;
     p = q;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) {
         iv[i] = strtol(p, &q, 10);
         if (q == p) return 0;
         p = q;
@@ -737,8 +807,7 @@ static int bk_parse(const char *s, bk_t *e) {
     e->act = (uint8_t)iv[0];
     e->placed = (uint8_t)iv[1];
     e->block = (uint8_t)iv[2];
-    e->bleed = (uint8_t)iv[3];
-    e->miss = (uint8_t)iv[4];
+    e->miss = (uint8_t)iv[3];
     bk_pack(e, g);
     for (int i = 0; i < 5; i++)
         for (int k = 0; k < cnt[i]; k++) {
@@ -964,7 +1033,7 @@ static int grp_resolve(const cv_t *cv, par_t *pp) {
     return pp->grp;
 }
 
-static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth, int *bleed) {
+static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth) {
     if (g_budget <= 0) { g_starved = 1; return; }
     g_budget--;
     int ax = cv->ax, ay = 1 - ax;
@@ -1042,13 +1111,13 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth, int *bl
     double u0 = r->oa[ay] * pp->vsz + r->oo[ay];
     double u1 = r->oa[2 + ay] * pp->vsz + r->oo[2 + ay];
     double v0 = pp->v0 + fmin(u0, u1) * pp->kp, v1 = pp->v0 + fmax(u0, u1) * pp->kp;
-    int bake = bake_on() && r->kh;
+    int span = d0 <= K_FULL_TOL && cv->design - d1 <= K_FULL_TOL;
+    int bake = bake_on() && r->kh && !span;
     bk_t *bk = bake ? bk_find(r->kh, cv->size) : NULL;
     if (bk && bk->miss >= K_BAKE_MISS_MAX) bake = 0;
     if (bake && bk && bk_match(bk, r, pp)) {
         int bact = bk->act, bblock = bk->block;
         g_act[bact]++;
-        if (bk->bleed) *bleed = 1;
         if (bact == ACT_SKIP) return;
         if (bk->placed) {
             if (!same4(ca, bk->fa, 1e-5f) || !same4(co, bk->fo, 1e-3f)) {
@@ -1069,20 +1138,7 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth, int *bl
         process_children(tf, cv, &bp, depth + 1);
         return;
     }
-    int nchild = -1, art = 0, bset = 0;
-    if (d0 <= K_FULL_TOL && cv->design - d1 <= K_FULL_TOL && v0 <= K_FULL_TOL && cv->osize - v1 <= K_FULL_TOL) {
-        nchild = child_count(tf);
-        if (nchild == 0) {
-            if (r->kind == 3 || r->kind == 4) art = r->kind == 3;
-            else {
-                art = !*bleed && depth <= K_ART_DEPTH;
-                r->kind = art ? 3 : 4;
-                r->keep = 1;
-            }
-            *bleed = 1;
-            bset = 1;
-        }
-    }
+    int nchild = -1, art = span && node_art(tf, r);
     double t0 = 0.0, t1 = 0.0;
     int act = classify(d0, d1, cv, art, &t0, &t1);
     if ((act == ACT_LEFT || act == ACT_RIGHT) && grp_resolve(cv, pp)) {
@@ -1102,7 +1158,7 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth, int *bl
     double a0 = pp->act0 + (ca[ax] * pp->asz + co[ax]) * pp->kp;
     double a1 = pp->act0 + (ca[2 + ax] * pp->asz + co[2 + ax]) * pp->kp;
     if (act == ACT_SKIP) {
-        if (bake) bake_record(bk, r, cv->size, pp, act, 0, 1, bset, ca, co);
+        if (bake) bake_record(bk, r, cv->size, pp, act, 0, 1, ca, co);
         if (!r->logged && log_ok()) {
             char name[48];
             ascii_name(tf, name, sizeof name);
@@ -1120,9 +1176,10 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth, int *bl
         if (act == ACT_COVER) {
             double f = cv->size / cv->design, mid = cv->osize / 2.0;
             changed |= place_axis(tf, ay, pp->v0, pp->vsz, pp->kp, mid + (v0 - mid) * f + dy, mid + (v1 - mid) * f + dy, &b0, &b1);
-        } else if (ov) {
+        } else if (ov || r->cover) {
             changed |= place_axis(tf, ay, pp->v0, pp->vsz, pp->kp, v0 + dy, v1 + dy, &b0, &b1);
         }
+        r->cover = act == ACT_COVER;
         if (changed) {
             rt_read(tf, ca, co);
             memcpy(r->aa, ca, sizeof r->aa);
@@ -1146,7 +1203,7 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth, int *bl
     }
     int deep = act == ACT_STRETCH || act == ACT_THRU;
     int block = !deep || opaque(tf);
-    if (bake) bake_record(bk, r, cv->size, pp, act, act != ACT_THRU, block, bset, ca, co);
+    if (bake) bake_record(bk, r, cv->size, pp, act, act != ACT_THRU, block, ca, co);
     if (depth >= K_MAX_DEPTH || (block && !anc)) return;
     par_t np;
     child_par(&np, cv, pp, r, ca, co, d0, lo, hi, a0, v0, kpn);
@@ -1193,7 +1250,7 @@ static int group_centred(void *tf, const cv_t *cv, const par_t *pp, int n) {
 }
 
 static void process_children(void *tf, const cv_t *cv, const par_t *pp0, int depth) {
-    int n = child_count(tf), bleed = 0;
+    int n = child_count(tf);
     par_t lp = *pp0;
     lp.ptf = tf;
     lp.n = n;
@@ -1204,7 +1261,7 @@ static void process_children(void *tf, const cv_t *cv, const par_t *pp0, int dep
         void *child = child_at(tf, i);
         if (!child || child == s_hl_tf || (g_skip_inactive && !active_node(child))) continue;
         s_idx = i;
-        process_node(child, cv, pp, depth, &bleed);
+        process_node(child, cv, pp, depth);
     }
 }
 
