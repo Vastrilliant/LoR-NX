@@ -76,6 +76,6 @@ void front_save_failed(int err);
 void front_game_clicked(void);
 enum { DM_LAYOUT_MODE = 1, DM_LAYOUT_NUDGE, DM_LAYOUT_STEP, DM_LAYOUT_RESET, DM_LAYOUT_DESELECT, DM_LAYOUT_SAVE };
 void front_layout_panel(int show);
-void front_layout_state(const char *key, int mode, int index, int total, float dx, float dy, int placements);
+void front_layout_state(const char *key, int mode, int index, int total, int placements, const char *how, const char *calc);
 void dm_layout_pick(float nx, float ny);
 void dm_layout_cmd(int cmd, float a, float b);

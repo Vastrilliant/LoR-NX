@@ -15,7 +15,16 @@
       "on": "1",
       "off": "0",
       "label": "Ignore built-in layout fixes",
-      "note": "Skips the hand-made placements built into the mod and uses only the automatic layout (plus the placements you saved in the layout editor).",
+      "note": "Skips the hand-made placements built into the mod and uses only the automatic layout. The placements you saved in the layout editor are still applied.",
+      "default": "0"
+    },
+    {
+      "env": "DM_MOD_FULLSCREEN_IGNORE_LAYOUT",
+      "kind": "toggle",
+      "on": "1",
+      "off": "0",
+      "label": "Ignore saved layout placements",
+      "note": "Skips the placements saved in the layout editor's file and uses only the automatic layout plus the built-in placements. Saving from the editor while this is on keeps the old file as a .bak.",
       "default": "0"
     },
     {
@@ -24,7 +33,7 @@
       "on": "1",
       "off": "0",
       "label": "Layout editor",
-      "note": "Shows the Layout button in the game. Tap an element to pick it, set how it is placed and nudge it, then Save.",
+      "note": "Shows the Layout button in the game. Tap an element to pick it: the panel shows the offset the automatic layout gives it, and your nudge is added to that offset. Then Save.",
       "default": "0"
     }
   ],

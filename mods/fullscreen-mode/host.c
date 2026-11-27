@@ -127,7 +127,7 @@ int dm_opmode(void);
 typedef struct { float x, y; } vec2;
 typedef struct { float x, y, z; } vec3;
 typedef struct { float x, y, w, h; } rect4;
-typedef struct { void *obj, *tex; float oa[4], oo[4], aa[4], ao[4], sh; uint32_t kh; uint8_t seen, logged, vlog, keep, kind, act, cover; } rec_t;
+typedef struct { void *obj, *tex; float oa[4], oo[4], aa[4], ao[4], base[4], sh; uint32_t kh; uint8_t seen, logged, vlog, keep, kind, act, cover, calc, cact; } rec_t;
 typedef struct { int ax; double size, design, osize, cscale; } cv_t;
 typedef struct { double des0, dsz, act0, asz, kp, v0, vsz; int grp, through, grp_ok, n; void *ptf; } par_t;
 typedef struct { float r, g, b, a; } rgba;
@@ -137,7 +137,7 @@ typedef struct { uint32_t h; uint8_t mode; float dx, dy; char key[K_KEY_MAX]; } 
 typedef struct { uint32_t h; int16_t ov; uint8_t anc; } slot_t;
 typedef struct { void *tf, *rend, *cam; uint32_t h; int depth, world; double area; char key[K_KEY_MAX]; } pick_t;
 typedef struct { float x, y, z, ex, ey, ez; } bounds_t;
-typedef struct { void *tf, *rend, *cam; int have, pw, ph; vec3 bp, bs, ap, as; bounds_t bb; } wld_t;
+typedef struct { void *tf, *rend, *cam; int have, pw, ph, calc; vec3 bp, bs, ap, as; bounds_t bb; double base[4]; } wld_t;
 
 enum { OV_AUTO, OV_LEFT, OV_CENTER, OV_RIGHT, OV_STRETCH, OV_EXPAND, OV_COUNT };
 
@@ -341,6 +341,15 @@ static void rec_sync(rec_t *r, const float *ca, const float *co) {
     }
     if (!same4(ca, r->aa, 1e-5f)) memcpy(r->oa, ca, sizeof r->oa);
     if (!same4(co, r->ao, 1e-3f)) memcpy(r->oo, co, sizeof r->oo);
+}
+
+static void calc_set(rec_t *r, int calc, int act, double x0, double x1, double y0, double y1) {
+    r->calc = (uint8_t)calc;
+    r->cact = (uint8_t)act;
+    r->base[0] = (float)x0;
+    r->base[1] = (float)x1;
+    r->base[2] = (float)y0;
+    r->base[3] = (float)y1;
 }
 
 static int classify(double d0, double d1, const cv_t *cv, int art, double *t0, double *t1) {
@@ -608,11 +617,27 @@ static int ignore_builtin(void) {
     return on;
 }
 
+static int ignore_layout(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DM_MOD_FULLSCREEN_IGNORE_LAYOUT");
+        on = v && v[0] == '1';
+        LOG("[mod fullscreen-mode] saved layout placements %s (DM_MOD_FULLSCREEN_IGNORE_LAYOUT=%s)", on ? "ignored" : "used", v ? v : "unset");
+    }
+    return on;
+}
+
 static int builtin_match(const char *key, int mode, float dx, float dy) {
     for (size_t i = 0; i < sizeof k_layout_default / sizeof *k_layout_default; i++) {
         const layout_default_t *d = &k_layout_default[i];
         if (d->mode == mode && fabsf(d->dx - dx) < 0.05f && fabsf(d->dy - dy) < 0.05f && !strcmp(d->key, key)) return 1;
     }
+    return 0;
+}
+
+static int is_builtin_key(const char *key) {
+    for (size_t i = 0; i < sizeof k_layout_default / sizeof *k_layout_default; i++)
+        if (!strcmp(k_layout_default[i].key, key)) return 1;
     return 0;
 }
 
@@ -632,17 +657,17 @@ static void layout_defaults(void) {
 }
 
 static int layout_load(void) {
+    if (ignore_layout()) { LOG("[mod fullscreen-mode] layout: %s not read", layout_path()); return 0; }
     FILE *f = fopen(layout_path(), "r");
     if (!f) { LOG("[mod fullscreen-mode] layout: no file %s", layout_path()); return 0; }
     char line[K_KEY_MAX + 64];
-    int n = 0, skipped = 0, ignore = ignore_builtin();
+    int n = 0;
     while (fgets(line, sizeof line, f)) {
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
         char *save = NULL, *key = strtok_r(line, "|", &save), *mode = strtok_r(NULL, "|", &save), *dx = strtok_r(NULL, "|", &save), *dy = strtok_r(NULL, "|\r\n", &save);
         int m = mode ? mode_parse(mode) : -1;
         if (!key || m < 0) continue;
         float fx = dx ? strtof(dx, NULL) : 0.0f, fy = dy ? strtof(dy, NULL) : 0.0f;
-        if (ignore && builtin_match(key, m, fx, fy)) { skipped++; continue; }
         ov_t *o = ov_make(key);
         if (!o) continue;
         o->mode = (uint8_t)m;
@@ -651,18 +676,28 @@ static int layout_load(void) {
         n++;
     }
     fclose(f);
-    LOG("[mod fullscreen-mode] layout: %d placements loaded from %s%s", n, layout_path(), skipped ? ", the built-in ones in it skipped" : "");
+    LOG("[mod fullscreen-mode] layout: %d placements loaded from %s", n, layout_path());
     return 1;
 }
 
+static void layout_backup(void) {
+    static int done;
+    if (done || !ignore_layout()) return;
+    done = 1;
+    char bak[1024];
+    snprintf(bak, sizeof bak, "%s.bak", layout_path());
+    if (!rename(layout_path(), bak)) LOG("[mod fullscreen-mode] layout: the saved file was not loaded, so its old contents are kept as %s", bak);
+}
+
 static void layout_save(void) {
+    layout_backup();
     FILE *f = fopen(layout_path(), "w");
     if (!f) { LOG("[mod fullscreen-mode] layout: cannot write %s", layout_path()); return; }
-    fprintf(f, "# fullscreen-mode layout, one placement per line: path|mode|dx|dy (c: canvas paths in design units, w: scene paths in screen pixels, dy up)\n");
-    int n = 0;
+    fprintf(f, "# fullscreen-mode layout, one placement per line: path|mode|dx|dy (c: canvas paths in design units, w: scene paths in screen pixels, dy up; dx and dy are added to the position the automatic layout gives; auto|0|0 on a built-in placement turns it off)\n");
+    int n = 0, builtin = !ignore_builtin();
     for (int i = 0; i < s_ov_n; i++) {
         const ov_t *o = &s_ov[i];
-        if (!o->key[0]) continue;
+        if (!o->key[0] || (builtin && builtin_match(o->key, o->mode, o->dx, o->dy))) continue;
         fprintf(f, "%s|%s|%.1f|%.1f\n", o->key, k_ov_name[o->mode], o->dx, o->dy);
         n++;
     }
@@ -1049,6 +1084,7 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth) {
         return;
     }
     rec_sync(r, ca, co);
+    r->calc = 0;
     ov_t *ov = NULL;
     int anc = 0;
     if (s_paths) {
@@ -1089,6 +1125,7 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth) {
         if (sact == ACT_STRETCH) fell = 1;
         else if (sact == ACT_LEFT || sact == ACT_RIGHT || sact == ACT_CENTER) {
             double sh = x0 - vlo;
+            calc_set(r, 2, sact, sh, sh, 0.0, 0.0);
             if (place_axis(tf, ax, pp->act0, pp->asz, pp->kp, d0 + sh, d1 + sh, &a0s, &a1s)) {
                 rt_read(tf, ca, co);
                 memcpy(r->aa, ca, sizeof r->aa);
@@ -1097,7 +1134,10 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth) {
                 g_changed++;
             }
             g_act[sact]++;
-        } else g_act[ACT_SCALED]++;
+        } else {
+            calc_set(r, 2, ACT_SCALED, 0.0, 0.0, 0.0, 0.0);
+            g_act[ACT_SCALED]++;
+        }
         if (!fell && !r->logged && log_ok()) {
             char name[48];
             ascii_name(tf, name, sizeof name);
@@ -1153,7 +1193,9 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth) {
         if (nchild < 0) nchild = child_count(tf);
         act = settle_container(tf, r, cv, d0, d1, hi - lo, kpn, nchild, act, &t0, &t1);
     }
-    if (ov && act != ACT_SKIP && act != ACT_THRU) { t0 += ov->dx; t1 += ov->dx; }
+    int moves = act != ACT_SKIP && act != ACT_THRU;
+    calc_set(r, moves ? 1 : 2, act, moves ? t0 - d0 : 0.0, moves ? t1 - d1 : 0.0, 0.0, 0.0);
+    if (ov && moves) { t0 += ov->dx; t1 += ov->dx; }
     g_act[act]++;
     double a0 = pp->act0 + (ca[ax] * pp->asz + co[ax]) * pp->kp;
     double a1 = pp->act0 + (ca[2 + ax] * pp->asz + co[2 + ax]) * pp->kp;
@@ -1175,7 +1217,10 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth) {
         double dy = ov ? ov->dy : 0.0, b0, b1;
         if (act == ACT_COVER) {
             double f = cv->size / cv->design, mid = cv->osize / 2.0;
-            changed |= place_axis(tf, ay, pp->v0, pp->vsz, pp->kp, mid + (v0 - mid) * f + dy, mid + (v1 - mid) * f + dy, &b0, &b1);
+            double y0 = mid + (v0 - mid) * f, y1 = mid + (v1 - mid) * f;
+            r->base[2] = (float)(y0 - v0);
+            r->base[3] = (float)(y1 - v1);
+            changed |= place_axis(tf, ay, pp->v0, pp->vsz, pp->kp, y0 + dy, y1 + dy, &b0, &b1);
         } else if (ov || r->cover) {
             changed |= place_axis(tf, ay, pp->v0, pp->vsz, pp->kp, v0 + dy, v1 + dy, &b0, &b1);
         }
@@ -1381,7 +1426,7 @@ static void sweep_ui(void) {
 }
 
 __attribute__((weak)) void front_layout_panel(int show) { (void)show; }
-__attribute__((weak)) void front_layout_state(const char *key, int mode, int index, int total, float dx, float dy, int placements) { (void)key; (void)mode; (void)index; (void)total; (void)dx; (void)dy; (void)placements; }
+__attribute__((weak)) void front_layout_state(const char *key, int mode, int index, int total, int placements, const char *how, const char *calc) { (void)key; (void)mode; (void)index; (void)total; (void)placements; (void)how; (void)calc; }
 
 static void q_push(int kind, float a, float b) {
     pthread_mutex_lock(&s_qm);
@@ -1575,6 +1620,7 @@ static void world_resolve(void) {
 static void world_apply(int i) {
     ov_t *o = &s_ov[i];
     wld_t *w = &s_wld[i];
+    w->calc = 0;
     void *go = FN(K_COMPONENT_GET_GAMEOBJECT, void *, void *, const void *)(w->tf, NULL);
     if (!alive(go) || !alive(w->rend)) return;
     if (!w->cam || !alive(w->cam)) w->cam = world_camera(go);
@@ -1618,14 +1664,17 @@ static void world_apply(int i) {
     }
     fx = fmin(fmax(fx, 0.05), 20.0);
     fy = fmin(fmax(fy, 0.05), 20.0);
+    w->calc = 1;
+    w->base[0] = t0 - bx0;
+    w->base[1] = t1 - bx1;
+    w->base[2] = ty0 - by0;
+    w->base[3] = ty1 - by1;
     t0 += o->dx;
     ty0 += o->dy;
     ex = px + (bx0 - px) * fx;
     ey = py + (by0 - py) * fy;
     double dpx = t0 - ex, dpy = ty0 - ey;
     double wx = (dpx * jyy - jyx * dpy) / det, wy = (jxx * dpy - jxy * dpx) / det;
-    (void)t1;
-    (void)ty1;
     vec3 np = {w->bp.x + (float)wx, w->bp.y + (float)wy, w->bp.z};
     vec3 ns = {w->bs.x * (float)fx, w->bs.y * (float)fy, w->bs.z};
     if (!near3(ns, cs)) FN(K_TRANSFORM_SET_LOCALSCALE, void, void *, vec3, const void *)(w->tf, ns, NULL);
@@ -1873,9 +1922,68 @@ static int ov_live(void) {
     return n;
 }
 
+static char s_how[128], s_calc[256];
+
+static void num_text(char *out, size_t cap, double v) {
+    if (fabs(v) < 0.5) snprintf(out, cap, "0");
+    else snprintf(out, cap, "%+.0f", v);
+}
+
+static void span_text(char *out, size_t cap, double a, double b) {
+    char x[24], y[24];
+    num_text(x, sizeof x, a);
+    if (fabs(a - b) < 0.5) { snprintf(out, cap, "%s", x); return; }
+    num_text(y, sizeof y, b);
+    snprintf(out, cap, "%s..%s", x, y);
+}
+
+static void calc_text(char *how, size_t hcap, char *txt, size_t tcap) {
+    const ov_t *o = ov_find(s_sel_h);
+    double ux = o ? o->dx : 0.0, uy = o ? o->dy : 0.0, b[4] = {0.0, 0.0, 0.0, 0.0};
+    int state = 1;
+    const char *name = "not moved by the layout";
+    if (s_sel_world) {
+        const wld_t *w = o ? &s_wld[o - s_ov] : NULL;
+        if (!o) name = "auto, left alone";
+        else if (w->calc) {
+            name = k_ov_name[o->mode];
+            memcpy(b, w->base, sizeof b);
+        } else name = "object not found yet";
+    } else {
+        const rec_t *r = rec_find(s_sel_tf);
+        if (r && r->calc) {
+            state = r->calc;
+            name = k_act_name[r->cact];
+            for (int i = 0; i < 4; i++) b[i] = r->base[i];
+        }
+    }
+    snprintf(how, hcap, "%s (%s)", name, s_sel_world ? "screen pixels" : "design units");
+    char ax[48], ay[48], tx[48], ty[48], mx[24], my[24];
+    span_text(ax, sizeof ax, b[0], b[1]);
+    span_text(ay, sizeof ay, b[2], b[3]);
+    if (state == 2) {
+        snprintf(txt, tcap, "algorithm  x %s   y %s\nyours      no effect here\ntotal      x %s   y %s", ax, ay, ax, ay);
+        return;
+    }
+    num_text(mx, sizeof mx, ux);
+    num_text(my, sizeof my, uy);
+    span_text(tx, sizeof tx, b[0] + ux, b[1] + ux);
+    span_text(ty, sizeof ty, b[2] + uy, b[3] + uy);
+    snprintf(txt, tcap, "algorithm  x %s   y %s\nyours      x %s   y %s\ntotal      x %s   y %s", ax, ay, mx, my, tx, ty);
+}
+
 static void push_state(void) {
     const ov_t *o = ov_find(s_sel_h);
-    front_layout_state(s_sel_tf ? s_sel_key : "", o ? o->mode : OV_AUTO, s_pick_i + 1, s_pick_n, o ? o->dx : 0.0f, o ? o->dy : 0.0f, ov_live());
+    if (s_sel_tf) calc_text(s_how, sizeof s_how, s_calc, sizeof s_calc);
+    else s_how[0] = s_calc[0] = 0;
+    front_layout_state(s_sel_tf ? s_sel_key : "", o ? o->mode : OV_AUTO, s_pick_i + 1, s_pick_n, ov_live(), s_how, s_calc);
+}
+
+static void edit_refresh(void) {
+    if (!edit_enabled() || g_state != 1 || !s_sel_tf || !alive(s_sel_tf)) return;
+    char how[sizeof s_how], txt[sizeof s_calc];
+    calc_text(how, sizeof how, txt, sizeof txt);
+    if (strcmp(how, s_how) || strcmp(txt, s_calc)) push_state();
 }
 
 static void edit_changed(const ov_t *o) {
@@ -1892,7 +2000,7 @@ static ov_t *sel_ov(void) {
 }
 
 static void sel_tidy(ov_t *o) {
-    if (o && o->mode == OV_AUTO && o->dx == 0.0f && o->dy == 0.0f) {
+    if (o && o->mode == OV_AUTO && o->dx == 0.0f && o->dy == 0.0f && (ignore_builtin() || !is_builtin_key(o->key))) {
         ov_drop(o);
         if (s_hl_img && alive(s_hl_img)) FN(K_GRAPHIC_SET_COLOR, void, void *, rgba, const void *)(s_hl_img, k_ov_color[OV_AUTO], NULL);
         LOG("[mod fullscreen-mode] edit: \"%s\" back to auto", s_sel_key);
@@ -1977,7 +2085,7 @@ static void frame_run(uint64_t *r, int param) {
         if (strncmp(dm_main_build(), K_BUILD_ID, 32) != 0) { g_state = -1; LOG("[mod fullscreen-mode] wrong build, mod stays out"); return; }
         g_state = 1;
         edit_enabled();
-        if (!s_loaded) { s_loaded = 1; if (!layout_load()) layout_defaults(); bake_open(); }
+        if (!s_loaded) { s_loaded = 1; layout_defaults(); layout_load(); bake_open(); }
     }
     if (++g_frame < g_next_check) return;
     g_next_check = g_frame + K_RECHECK_FRAMES;
@@ -2012,6 +2120,7 @@ static void frame_and_ui(uint64_t *r, int param) {
     world_tick();
     edit_follow();
     ui_run(r, param);
+    edit_refresh();
 }
 
 static int mod_enabled(void) {

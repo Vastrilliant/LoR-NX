@@ -50,6 +50,8 @@ static const float kSteps[] = {1.0f, 4.0f, 16.0f};
 @property (nonatomic, strong) UIButton *pill;
 @property (nonatomic, strong) UILabel *keyLabel;
 @property (nonatomic, strong) UILabel *infoLabel;
+@property (nonatomic, strong) UILabel *howLabel;
+@property (nonatomic, strong) UILabel *calcLabel;
 @property (nonatomic, strong) UISegmentedControl *modes;
 @property (nonatomic, strong) UISegmentedControl *steps;
 @property (nonatomic, strong) UISwitch *select;
@@ -57,7 +59,7 @@ static const float kSteps[] = {1.0f, 4.0f, 16.0f};
 @property (nonatomic) BOOL hasSelection;
 + (instancetype)shared;
 - (void)show;
-- (void)updateKey:(NSString *)key mode:(int)mode index:(int)index total:(int)total dx:(float)dx dy:(float)dy placements:(int)placements;
+- (void)updateKey:(NSString *)key mode:(int)mode index:(int)index total:(int)total placements:(int)placements how:(NSString *)how calc:(NSString *)calc;
 @end
 
 static UIButton *panel_button(NSString *title, CGRect frame, id target, SEL action) {
@@ -102,7 +104,7 @@ static UIButton *panel_button(NSString *title, CGRect frame, id target, SEL acti
     [self.pill addTarget:self action:@selector(openPanel) forControlEvents:UIControlEventTouchUpInside];
     [root addSubview:self.pill];
 
-    CGFloat w = 340, h = 392;
+    CGFloat w = 340, h = 384;
     self.panel = [[UIView alloc] initWithFrame:CGRectMake(MAX(root.bounds.size.width - ins.right - w - 12, 8), ins.top + 8, w, h)];
     self.panel.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
     self.panel.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
@@ -127,40 +129,52 @@ static UIButton *panel_button(NSString *title, CGRect frame, id target, SEL acti
     [header addSubview:closeButton];
     [self.panel addSubview:header];
 
-    UILabel *selLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 48, 120, 31)];
+    UILabel *selLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 44, 56, 31)];
     selLabel.text = @"Select";
     selLabel.textColor = UIColor.whiteColor;
     selLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
     [self.panel addSubview:selLabel];
     self.select = [[UISwitch alloc] init];
-    self.select.frame = CGRectMake(w - 14 - 51, 48, 51, 31);
+    self.select.frame = CGRectMake(68, 44, 51, 31);
     [self.select addTarget:self action:@selector(selectToggled) forControlEvents:UIControlEventValueChanged];
     [self.panel addSubview:self.select];
 
-    self.keyLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 84, w - 28, 48)];
+    UIButton *smaller = panel_button(@"\u2193 Smaller", CGRectMake(130, 45, 94, 30), self, @selector(smaller));
+    UIButton *larger = panel_button(@"\u2191 Larger", CGRectMake(w - 14 - 96, 45, 96, 30), self, @selector(larger));
+    [self.panel addSubview:smaller];
+    [self.panel addSubview:larger];
+
+    self.keyLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 80, w - 28, 42)];
     self.keyLabel.numberOfLines = 3;
     self.keyLabel.lineBreakMode = NSLineBreakByTruncatingHead;
     self.keyLabel.textColor = UIColor.whiteColor;
     self.keyLabel.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     [self.panel addSubview:self.keyLabel];
-    self.infoLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 134, w - 28, 18)];
+    self.infoLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 124, w - 28, 16)];
     self.infoLabel.textColor = [UIColor colorWithWhite:1 alpha:0.6];
     self.infoLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular];
     [self.panel addSubview:self.infoLabel];
+    self.howLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 140, w - 28, 16)];
+    self.howLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.howLabel.textColor = [UIColor colorWithWhite:1 alpha:0.6];
+    self.howLabel.font = [UIFont systemFontOfSize:11];
+    [self.panel addSubview:self.howLabel];
 
     self.modes = [[UISegmentedControl alloc] initWithItems:@[kModeTitles[0], kModeTitles[1], kModeTitles[2], kModeTitles[3], kModeTitles[4], kModeTitles[5]]];
-    self.modes.frame = CGRectMake(14, 160, w - 28, 32);
+    self.modes.frame = CGRectMake(14, 160, w - 28, 30);
     self.modes.apportionsSegmentWidthsByContent = NO;
     [self.modes setTitleTextAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold]} forState:UIControlStateNormal];
     [self.modes addTarget:self action:@selector(modeChanged) forControlEvents:UIControlEventValueChanged];
     [self.panel addSubview:self.modes];
 
-    UIButton *smaller = panel_button(@"\u2193 Smaller", CGRectMake(14, 202, (w - 36) / 2, 34), self, @selector(smaller));
-    UIButton *larger = panel_button(@"\u2191 Larger", CGRectMake(22 + (w - 36) / 2, 202, (w - 36) / 2, 34), self, @selector(larger));
-    [self.panel addSubview:smaller];
-    [self.panel addSubview:larger];
+    self.calcLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 196, w - 28, 46)];
+    self.calcLabel.numberOfLines = 3;
+    self.calcLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.calcLabel.textColor = UIColor.whiteColor;
+    self.calcLabel.font = [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular];
+    [self.panel addSubview:self.calcLabel];
 
-    CGFloat cx = 104, cy = 288, bs = 44;
+    CGFloat cx = 78, cy = 312, bs = 40;
     __weak DmLayoutEditor *weak = self;
     NSArray *dirs = @[@[@"\u2190", @(-1), @0, @(cx - bs - 4), @(cy)], @[@"\u2192", @1, @0, @(cx + bs + 4), @(cy)], @[@"\u2191", @0, @1, @(cx), @(cy - bs - 4)], @[@"\u2193", @0, @(-1), @(cx), @(cy + bs + 4)]];
     NSMutableArray *nudges = [NSMutableArray array];
@@ -183,19 +197,20 @@ static UIButton *panel_button(NSString *title, CGRect frame, id target, SEL acti
         [nudges addObject:b];
     }
 
-    UILabel *stepLabel = [[UILabel alloc] initWithFrame:CGRectMake(196, 254, 130, 18)];
+    CGFloat rx = 158, rw = w - 14 - rx;
+    UILabel *stepLabel = [[UILabel alloc] initWithFrame:CGRectMake(rx, 248, rw, 16)];
     stepLabel.text = @"Nudge step";
     stepLabel.textColor = [UIColor colorWithWhite:1 alpha:0.6];
     stepLabel.font = [UIFont systemFontOfSize:12];
     [self.panel addSubview:stepLabel];
     self.steps = [[UISegmentedControl alloc] initWithItems:@[@"1", @"4", @"16"]];
-    self.steps.frame = CGRectMake(196, 276, w - 196 - 14, 32);
+    self.steps.frame = CGRectMake(rx, 266, rw, 30);
     self.steps.selectedSegmentIndex = 0;
     [self.panel addSubview:self.steps];
 
-    UIButton *reset = panel_button(@"Reset", CGRectMake(14, 344, 96, 34), self, @selector(resetTapped));
-    UIButton *deselect = panel_button(@"Deselect", CGRectMake(122, 344, 96, 34), self, @selector(deselectTapped));
-    UIButton *save = panel_button(@"Save", CGRectMake(230, 344, w - 230 - 14, 34), self, @selector(saveTapped));
+    UIButton *reset = panel_button(@"Reset", CGRectMake(rx, 306, (rw - 8) / 2, 32), self, @selector(resetTapped));
+    UIButton *deselect = panel_button(@"Deselect", CGRectMake(rx + (rw - 8) / 2 + 8, 306, (rw - 8) / 2, 32), self, @selector(deselectTapped));
+    UIButton *save = panel_button(@"Save", CGRectMake(rx, 344, rw, 32), self, @selector(saveTapped));
     save.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:1.0 alpha:0.6];
     [self.panel addSubview:reset];
     [self.panel addSubview:deselect];
@@ -205,7 +220,7 @@ static UIButton *panel_button(NSString *title, CGRect frame, id target, SEL acti
     [needs addObjectsFromArray:nudges];
     self.needsSelection = needs;
     [root addSubview:self.panel];
-    [self updateKey:@"" mode:0 index:0 total:0 dx:0 dy:0 placements:0];
+    [self updateKey:@"" mode:0 index:0 total:0 placements:0 how:@"" calc:@""];
 }
 
 - (void)openPanel {
@@ -266,16 +281,20 @@ static UIButton *panel_button(NSString *title, CGRect frame, id target, SEL acti
 - (void)deselectTapped { dm_layout_cmd(DM_LAYOUT_DESELECT, 0, 0); }
 - (void)saveTapped { dm_layout_cmd(DM_LAYOUT_SAVE, 0, 0); }
 
-- (void)updateKey:(NSString *)key mode:(int)mode index:(int)index total:(int)total dx:(float)dx dy:(float)dy placements:(int)placements {
+- (void)updateKey:(NSString *)key mode:(int)mode index:(int)index total:(int)total placements:(int)placements how:(NSString *)how calc:(NSString *)calc {
     self.hasSelection = key.length > 0;
     for (UIControl *c in self.needsSelection) c.enabled = self.hasSelection;
     if (self.hasSelection) {
         self.keyLabel.text = [key stringByReplacingOccurrencesOfString:@"/" withString:@" / "];
-        self.infoLabel.text = [NSString stringWithFormat:@"%d of %d   dx %.0f   dy %.0f   saved set: %d", index, total, dx, dy, placements];
+        self.infoLabel.text = [NSString stringWithFormat:@"%d of %d   saved set: %d", index, total, placements];
+        self.howLabel.text = how;
+        self.calcLabel.text = calc;
         if (mode >= 0 && mode < 6) self.modes.selectedSegmentIndex = mode;
     } else {
         self.keyLabel.text = self.select.on ? @"Tap an element on the screen" : @"Turn Select on, then tap an element";
         self.infoLabel.text = [NSString stringWithFormat:@"placements: %d", placements];
+        self.howLabel.text = @"";
+        self.calcLabel.text = @"";
         self.modes.selectedSegmentIndex = UISegmentedControlNoSegment;
     }
 }
@@ -287,7 +306,9 @@ void front_layout_panel(int show) {
     dispatch_async(dispatch_get_main_queue(), ^{ [[DmLayoutEditor shared] show]; });
 }
 
-void front_layout_state(const char *key, int mode, int index, int total, float dx, float dy, int placements) {
+void front_layout_state(const char *key, int mode, int index, int total, int placements, const char *how, const char *calc) {
     NSString *k = key ? @(key) : @"";
-    dispatch_async(dispatch_get_main_queue(), ^{ [[DmLayoutEditor shared] updateKey:k mode:mode index:index total:total dx:dx dy:dy placements:placements]; });
+    NSString *h = how ? @(how) : @"";
+    NSString *c = calc ? @(calc) : @"";
+    dispatch_async(dispatch_get_main_queue(), ^{ [[DmLayoutEditor shared] updateKey:k mode:mode index:index total:total placements:placements how:h calc:c]; });
 }
