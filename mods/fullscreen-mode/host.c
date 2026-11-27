@@ -1145,28 +1145,32 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth) {
     }
     if (fabs(srel) < K_SCALE_MIN) { g_act[ACT_SCALED]++; return; }
     int fell = 0;
+    double u0 = r->oa[ay] * pp->vsz + r->oo[ay];
+    double u1 = r->oa[2 + ay] * pp->vsz + r->oo[2 + ay];
+    double v0 = pp->v0 + fmin(u0, u1) * pp->kp, v1 = pp->v0 + fmax(u0, u1) * pp->kp;
     if (fabs(srel - 1.0) > 0.01) {
         vec2 pv = FN(K_RT_GET_PIVOT, vec2, void *, const void *)(tf, NULL);
         double piv = d0 + (ax ? pv.y : pv.x) * (d1 - d0), sc = fabs(srel);
         double va = piv + (d0 - piv) * sc, vb = piv + (d1 - piv) * sc, x0 = 0.0, x1 = 0.0;
         double vlo = fmin(va, vb), vhi = fmax(va, vb);
-        int sact = classify(vlo, vhi, cv, 0, &x0, &x1);
+        int sact = ov && ov->mode != OV_AUTO ? ov_apply(ov->mode, vlo, vhi, cv, &x0, &x1) : classify(vlo, vhi, cv, 0, &x0, &x1);
         double a0s = 0.0, a1s = 0.0;
-        if (sact == ACT_STRETCH) fell = 1;
-        else if (sact == ACT_LEFT || sact == ACT_RIGHT || sact == ACT_CENTER) {
-            double sh = x0 - vlo;
-            calc_set(r, 2, sact, sh, sh, 0.0, 0.0);
-            if (place_axis(tf, ax, pp->act0, pp->asz, pp->kp, d0 + sh, d1 + sh, &a0s, &a1s)) {
+        if (sact == ACT_STRETCH || sact == ACT_COVER) fell = 1;
+        else {
+            int mv = sact == ACT_LEFT || sact == ACT_RIGHT || sact == ACT_CENTER;
+            double base = mv ? x0 - vlo : 0.0, sh = base + (ov ? ov->dx : 0.0), dyv = ov ? ov->dy : 0.0, b0, b1;
+            calc_set(r, 1, mv ? sact : ACT_SCALED, base, base, 0.0, 0.0);
+            int changed = 0;
+            if (mv || ov) changed |= place_axis(tf, ax, pp->act0, pp->asz, pp->kp, d0 + sh, d1 + sh, &a0s, &a1s);
+            if (ov) changed |= place_axis(tf, ay, pp->v0, pp->vsz, pp->kp, v0 + dyv, v1 + dyv, &b0, &b1);
+            if (changed) {
                 rt_read(tf, ca, co);
                 memcpy(r->aa, ca, sizeof r->aa);
                 memcpy(r->ao, co, sizeof r->ao);
                 r->keep = 1;
                 g_changed++;
             }
-            g_act[sact]++;
-        } else {
-            calc_set(r, 2, ACT_SCALED, 0.0, 0.0, 0.0, 0.0);
-            g_act[ACT_SCALED]++;
+            g_act[mv ? sact : ACT_SCALED]++;
         }
         if (!fell && !r->logged && log_ok()) {
             char name[48];
@@ -1178,9 +1182,6 @@ static void process_node(void *tf, const cv_t *cv, par_t *pp, int depth) {
         if (!fell) return;
         g_act[ACT_SCALED]--;
     }
-    double u0 = r->oa[ay] * pp->vsz + r->oo[ay];
-    double u1 = r->oa[2 + ay] * pp->vsz + r->oo[2 + ay];
-    double v0 = pp->v0 + fmin(u0, u1) * pp->kp, v1 = pp->v0 + fmax(u0, u1) * pp->kp;
     int span = d0 <= K_FULL_TOL && cv->design - d1 <= K_FULL_TOL;
     int bake = bake_on() && r->kh && !span;
     bk_t *bk = bake ? bk_find(r->kh, cv->size) : NULL;
