@@ -467,11 +467,34 @@ static void seg_clean(char *str) {
         if (*str == '/' || *str == '|' || *str == ' ' || *str == '[' || *str == ']' || *str == '\t' || *str == '\n' || *str == '\r') *str = '_';
 }
 
+static int is_clone_name(const char *name) {
+    size_t n = strlen(name);
+    return n >= 7 && !strcmp(name + n - 7, "(Clone)");
+}
+
 static void seg_make(void *tf, int idx, char *out) {
     char name[K_SEG_MAX - 8];
     ascii_name(tf, name, sizeof name);
     seg_clean(name);
-    snprintf(out, K_SEG_MAX, "%s[%d]", name, idx);
+    if (is_clone_name(name)) snprintf(out, K_SEG_MAX, "%s[*]", name);
+    else snprintf(out, K_SEG_MAX, "%s[%d]", name, idx);
+}
+
+static void key_canon(const char *in, char *out, size_t cap) {
+    size_t o = 0;
+    while (*in && o + 1 < cap) {
+        if (!strncmp(in, "(Clone)[", 8)) {
+            const char *p = in + 8;
+            while (*p >= '0' && *p <= '9') p++;
+            if (p > in + 8 && *p == ']') {
+                for (const char *rep = "(Clone)[*]"; *rep && o + 1 < cap; rep++) out[o++] = *rep;
+                in = p + 1;
+                continue;
+            }
+        }
+        out[o++] = *in++;
+    }
+    out[o] = 0;
 }
 
 static void canvas_root(void *go, char *out) {
@@ -483,7 +506,7 @@ static void canvas_root(void *go, char *out) {
 
 static uint32_t key_hash(const char *key, int register_ancestors) {
     char buf[K_KEY_MAX];
-    snprintf(buf, sizeof buf, "%s", key);
+    key_canon(key, buf, sizeof buf);
     char *save = NULL, *tok = strtok_r(buf, "/", &save);
     uint32_t h = 0;
     int first = 1;
@@ -511,7 +534,9 @@ static ov_t *ov_find(uint32_t h) {
 }
 
 static ov_t *ov_make(const char *key) {
-    uint32_t h = key_hash(key, 1);
+    char canon[K_KEY_MAX];
+    key_canon(key, canon, sizeof canon);
+    uint32_t h = key_hash(canon, 1);
     if (!h) return NULL;
     ov_t *o = ov_find(h);
     if (o) return o;
@@ -527,7 +552,7 @@ static ov_t *ov_make(const char *key) {
     o = &s_ov[idx];
     memset(o, 0, sizeof *o);
     o->h = h;
-    snprintf(o->key, sizeof o->key, "%s", key);
+    snprintf(o->key, sizeof o->key, "%s", canon);
     sl->ov = (int16_t)idx;
     s_paths = 1;
     return o;
@@ -630,14 +655,19 @@ static int ignore_layout(void) {
 static int builtin_match(const char *key, int mode, float dx, float dy) {
     for (size_t i = 0; i < sizeof k_layout_default / sizeof *k_layout_default; i++) {
         const layout_default_t *d = &k_layout_default[i];
-        if (d->mode == mode && fabsf(d->dx - dx) < 0.05f && fabsf(d->dy - dy) < 0.05f && !strcmp(d->key, key)) return 1;
+        char canon[K_KEY_MAX];
+        key_canon(d->key, canon, sizeof canon);
+        if (d->mode == mode && fabsf(d->dx - dx) < 0.05f && fabsf(d->dy - dy) < 0.05f && !strcmp(canon, key)) return 1;
     }
     return 0;
 }
 
 static int is_builtin_key(const char *key) {
-    for (size_t i = 0; i < sizeof k_layout_default / sizeof *k_layout_default; i++)
-        if (!strcmp(k_layout_default[i].key, key)) return 1;
+    for (size_t i = 0; i < sizeof k_layout_default / sizeof *k_layout_default; i++) {
+        char canon[K_KEY_MAX];
+        key_canon(k_layout_default[i].key, canon, sizeof canon);
+        if (!strcmp(canon, key)) return 1;
+    }
     return 0;
 }
 
